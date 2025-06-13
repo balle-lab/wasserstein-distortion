@@ -23,7 +23,11 @@ classifiers = [
 keywords = [
     "machine-learning", "deep-learning",
 ]
-dependencies = []
+dependencies = [
+    "numpy >=1.26,<2",
+    "torch >=1.7,<3",
+    "torchvision >=0.16,<1"
+]
 dynamic = ["version", "description"]
 
 [project.urls]
@@ -35,7 +39,7 @@ requires = ["flit_core >=3.5,<4"]
 build-backend = "flit_core.buildapi"
 
 [tool.flit.module]
-name = "wasserstein-distortion"
+name = "wasserstein_distortion"
 
 [tool.black]
 line-length = 90
