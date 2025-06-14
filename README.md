@@ -1,8 +1,8 @@
 # wasserstein-distortion
-Wasserstein Distortion implementation in PyTorch
+Wasserstein Distortion implementation in PyTorch.
 
 ## Install
-```pip install https://github.com/balle-lab/wasserstein-distortion```
+```pip install git+https://github.com/balle-lab/wasserstein-distortion.git```
 
-## Useage
+## Usage
 Check ```wasserstein_distorion_test_example.py```.
