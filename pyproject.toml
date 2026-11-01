@@ -24,11 +24,21 @@ keywords = [
     "machine-learning", "deep-learning",
 ]
 dependencies = [
-    "numpy >=1.26,<2",
-    "torch >=1.7,<3",
-    "torchvision >=0.16,<1"
+    "numpy >=1.26",
 ]
 dynamic = ["version", "description"]
+
+[project.optional-dependencies]
+jax = [
+    "jax >=0.4.25",
+    "flaxmodels @ git+https://github.com/matthias-wright/flaxmodels.git",
+]
+torch = [
+    "torch >=2.0",
+    "torchvision >=0.16",
+]
+all = ["wasserstein-distortion[jax,torch]"]
+test = ["pytest"]
 
 [project.urls]
 homepage = "https://github.com/balle-lab/wasserstein-distortion"
@@ -41,9 +51,15 @@ build-backend = "flit_core.buildapi"
 [tool.flit.module]
 name = "wasserstein_distortion"
 
+[tool.flit.sdist]
+include = ["tests/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.black]
 line-length = 90
-target-version = ["py313"]
+target-version = ["py312"]
 
 [tool.pylint.main]
 fail-under = 10.0
@@ -51,8 +67,7 @@ ignore-patterns = ["^\\.#"]
 jobs = 1
 limit-inference-results = 100
 persistent = true
-py-version = "3.13"
-suggestion-mode = true
+py-version = "3.12"
 
 [tool.pylint.basic]
 argument-naming-style = "snake_case"
@@ -164,7 +179,7 @@ ignored-argument-names = "_.*|^ignored_|^unused_"
 redefining-builtins-modules = ["six.moves", "past.builtins", "future.builtins", "builtins", "io"]
 
 [tool.pyright]
-pythonVersion = "3.13"
+pythonVersion = "3.12"
 pythonPlatform = "Linux"
 typeCheckingMode = "standard"
 deprecateTypingAliases = true
@@ -175,6 +190,7 @@ reportOptionalMemberAccess = "none"
 reportConstantRedefinition = "warning"
 reportDeprecated = "warning"
 reportDuplicateImport = "warning"
+reportIncompatibleMethodOverride = "none"
 reportIncompleteStub = "warning"
 reportInconsistentConstructor = "warning"
 reportInvalidStubStatement = "warning"
@@ -185,6 +201,7 @@ reportUnnecessaryCast = "warning"
 reportUnnecessaryComparison = "warning"
 reportUnnecessaryContains = "warning"
 reportUnnecessaryIsInstance = "warning"
+reportUnusedCallResult = "none"
 reportUnusedClass = "warning"
 reportUnusedImport = "none"
 reportUnusedFunction = "warning"
@@ -201,4 +218,3 @@ reportPropertyTypeMismatch = "warning"
 reportShadowedImports = "warning"
 reportUninitializedInstanceVariable = "none"
 reportUnnecessaryTypeIgnoreComment = "warning"
-reportUnusedCallResult = "warning"

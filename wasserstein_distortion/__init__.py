@@ -1,4 +1,4 @@
-# Copyright 2025 Yueyu Hu, Jona Ballé.
+# Copyright 2025 Wasserstein Distortion authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may not use this
 # file except in compliance with the License. You may obtain a copy of the License at
@@ -10,7 +10,8 @@
 # KIND, either express or implied. See the License for the specific language governing
 # permissions and limitations under the License.
 # ========================================================================================
-"""Implementation of Wasserstein Distortion in PyTorch."""
-__version__ = "0.1.0"
+"""Wasserstein Distortion, implemented in JAX and PyTorch."""
 
-from .wasserstein_distortion import VGG16WassersteinDistortion
+# Framework-specific code lives in the `jax` and `torch` subpackages. Do not import them
+# here, so that the package works with only one of the frameworks installed.
+__version__ = "0.2.0"
