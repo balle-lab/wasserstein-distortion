@@ -103,8 +103,8 @@ class VGG16Features(nn.Module):
             The image itself, followed by the VGG activations for each scale, each a
             tensor of shape ``(batch, channels, height, width)``.
         """
+        features = [image]
         x = (image - self.mean) / self.std
-        features = [x]
         for _ in range(self.num_scales):
             h = x
             for block in self.blocks:

@@ -68,10 +68,10 @@ def compute_vgg16_features(image: ArrayLike, num_scales: int = 3) -> list[Array]
     except KeyError:
         raise RuntimeError("Please call `load_vgg16_model` first.")
     layers = ["relu1_2", "relu2_2", "relu3_3", "relu4_3", "relu5_3"]
+    features: list[Array] = [image]  # type:ignore
     mean = jnp.array([0.485, 0.456, 0.406]).reshape((-1, 1, 1)).astype(image.dtype)
     std = jnp.array([0.229, 0.224, 0.225]).reshape((-1, 1, 1)).astype(image.dtype)
     image = (image - mean) / std
-    features: list[Array] = [image]  # type:ignore
     for _ in range(num_scales):
         activations = vgg.apply(params, image.transpose((1, 2, 0))[None], train=False)
         features.extend(activations[l].squeeze(0).transpose((2, 0, 1)) for l in layers)

@@ -380,6 +380,7 @@ def test_vgg16_features_shapes(num_scales):
     outputs = pretrained_features.compute_vgg16_features(image, num_scales=num_scales)
 
     assert len(outputs) == 1 + 5 * num_scales
+    assert outputs[0] is image
     channels = [64, 128, 256, 512, 512]
     for scale in range(num_scales):
         for layer in range(5):
