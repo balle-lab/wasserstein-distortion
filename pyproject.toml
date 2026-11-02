@@ -4,8 +4,9 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = {file = "LICENSE"}
 authors = [
-    {name = "Yueyu Hu", email = "yh3986@nyu.edu"},
     {name = "Jona Ballé", email = "jona.balle@nyu.edu"},
+    {name = "Yueyu Hu", email = "yh3986@nyu.edu"},
+    {name = "Ruizhe Huang", email = "rh4145@nyu.edu"},
 ]
 maintainers = [{name = "Jona Ballé", email = "jona.balle@nyu.edu"}]
 classifiers = [
