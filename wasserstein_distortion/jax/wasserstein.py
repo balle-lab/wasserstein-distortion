@@ -13,7 +13,7 @@
 """Implementation of Wasserstein Distortion in JAX."""
 
 import collections
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from typing import overload, Any, Literal
 import jax
 from jax import numpy as jnp
@@ -175,6 +175,7 @@ def multi_wasserstein_distortion(
     features_b: Collection[Array],
     log2_sigma: Array,
     *,
+    weights: Sequence[ArrayLike] | None = None,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
     return_intermediates: Literal[False] = False,
@@ -187,6 +188,7 @@ def multi_wasserstein_distortion(
     features_b: Collection[Array],
     log2_sigma: Array,
     *,
+    weights: Sequence[ArrayLike] | None = None,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
     return_intermediates: Literal[True],
@@ -198,6 +200,7 @@ def multi_wasserstein_distortion(
     features_b: Collection[Array],
     log2_sigma: Array,
     *,
+    weights: Sequence[ArrayLike] | None = None,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
     return_intermediates: bool = False,
@@ -221,6 +224,9 @@ def multi_wasserstein_distortion(
         Array of shape ``(height, width)``. The base two logarithm of the sigma map, which
         indicates the amount of summarization in each location. Doesn't have to have the
         same shape as the feature arrays.
+    weights
+        One weight per feature array, used to form the weighted sum of the distortion
+        values across feature arrays. If ``None``, all weights are 1.
     num_levels
         The number of multi-scale levels of the feature statistics to compute. Must be
         greater than or equal to the maximum of `log2_sigma`.
@@ -257,10 +263,17 @@ def multi_wasserstein_distortion(
             f"`features_a` and `features_b` must have same length, but received "
             f"{len(features_a)} and {len(features_b)}, respectively."
         )
+    if weights is None:
+        weights = [1.0] * len(features_a)
+    elif len(weights) != len(features_a):
+        raise ValueError(
+            f"`weights` must have the same length as the feature lists, but received "
+            f"{len(weights)} and {len(features_a)}, respectively."
+        )
 
     dist = jnp.zeros(())
     intermediates = collections.defaultdict(list)
-    for fa, fb in zip(features_a, features_b):
+    for fa, fb, w in zip(features_a, features_b, weights):
         if fa.shape != fb.shape:
             raise ValueError(
                 f"Found feature arrays with incompatible shapes. "
@@ -284,7 +297,7 @@ def multi_wasserstein_distortion(
             sqrt_grad_limit=sqrt_grad_limit,
             return_intermediates=True,
         )
-        dist += d
+        dist += w * d
         for i in s:
             intermediates[i].append(s[i])
 
@@ -299,6 +312,7 @@ def vgg16_wasserstein_distortion(
     log2_sigma: Array,
     *,
     num_scales: int = 3,
+    image_weight: ArrayLike = 20.0,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
 ) -> Array:
@@ -323,6 +337,9 @@ def vgg16_wasserstein_distortion(
         will be downsampled ``num_scales - 1`` times and VGG features computed on the
         original image plus the downsampled versions. The concatenated list of all
         features will be used to compute the distortion.
+    image_weight
+        Weight of the distortion computed on the image itself (i.e., on pixels), relative
+        to the VGG feature maps, which each have weight 1.
     num_levels
         The number of multi-scale levels of the feature statistics to compute. Must be
         greater than or equal to the maximum of `log2_sigma`.
@@ -356,6 +373,7 @@ def vgg16_wasserstein_distortion(
         features_a,
         features_b,
         log2_sigma,
+        weights=[image_weight] + [1.0] * (len(features_a) - 1),
         num_levels=num_levels,
         sqrt_grad_limit=sqrt_grad_limit,
         return_intermediates=False,

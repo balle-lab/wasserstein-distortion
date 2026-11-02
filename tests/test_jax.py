@@ -244,6 +244,44 @@ def test_multi_wasserstein_distortion_behavior():
         )
 
 
+def test_multi_wasserstein_distortion_weights():
+    """Verifies the weighting of feature arrays in multi_wasserstein_distortion().
+
+    Checks
+    ------
+    - The result equals the weighted sum of the per-array distortions.
+    - Unit weights give the same result as no weights.
+    - The function raises an error if the number of weights is wrong.
+    """
+    keys = jax.random.split(jax.random.key(0), 5)
+    shapes = [(2, 32, 32), (2, 16, 16)]
+    features_a = [jax.random.uniform(k, s) for k, s in zip(keys[:2], shapes)]
+    features_b = [jax.random.uniform(k, s) for k, s in zip(keys[2:4], shapes)]
+    log2_sigma = 2 * jax.random.uniform(keys[4], (32, 32))
+
+    parts = [
+        wasserstein.multi_wasserstein_distortion([fa], [fb], log2_sigma)
+        for fa, fb in zip(features_a, features_b)
+    ]
+    result = wasserstein.multi_wasserstein_distortion(
+        features_a, features_b, log2_sigma, weights=[0.5, 3.0]
+    )
+    assert jnp.allclose(result, 0.5 * parts[0] + 3.0 * parts[1])
+
+    unweighted = wasserstein.multi_wasserstein_distortion(
+        features_a, features_b, log2_sigma
+    )
+    result = wasserstein.multi_wasserstein_distortion(
+        features_a, features_b, log2_sigma, weights=[1.0, 1.0]
+    )
+    assert jnp.allclose(result, unweighted)
+
+    with pytest.raises(ValueError):
+        _ = wasserstein.multi_wasserstein_distortion(
+            features_a, features_b, log2_sigma, weights=[1.0]
+        )
+
+
 def test_compute_multiscale_stats_non_constant():
     """Verifies variance computation on non-uniform input (checkerboard pattern).
 
@@ -406,6 +444,27 @@ def test_vgg16_wasserstein_distortion_can_be_called():
     )
     assert dist > 0.0
     assert jnp.all(jnp.isfinite(grad))
+
+
+def test_vgg16_wasserstein_distortion_image_weight():
+    """Verifies that `image_weight` only scales the distortion on the image itself."""
+    pretrained_features.load_vgg16_model(pretrained=False)
+
+    key_a, key_b = jax.random.split(jax.random.key(0))
+    image_a = jax.random.uniform(key_a, (3, 64, 64))
+    image_b = jax.random.uniform(key_b, (3, 64, 64))
+    log2_sigma = jnp.full((64, 64), 3.0)
+
+    base = wasserstein.vgg16_wasserstein_distortion(
+        image_a, image_b, log2_sigma, num_scales=2, image_weight=1.0
+    )
+    weighted = wasserstein.vgg16_wasserstein_distortion(
+        image_a, image_b, log2_sigma, num_scales=2, image_weight=3.0
+    )
+    pixel_dist = wasserstein.multi_wasserstein_distortion(
+        [image_a], [image_b], log2_sigma
+    )
+    assert jnp.allclose(weighted, base + 2.0 * pixel_dist, rtol=1e-5)
 
 
 def test_discrete_wasserstein_distortion_behavior():

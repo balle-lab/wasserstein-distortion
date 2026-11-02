@@ -132,6 +132,7 @@ def multi_wasserstein_distortion(
     features_b: Sequence[Tensor],
     log2_sigma: Tensor,
     *,
+    weights: Sequence[float] | None = None,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
 ) -> Tensor:
@@ -154,6 +155,9 @@ def multi_wasserstein_distortion(
         Tensor of shape ``(batch, 1, height, width)``. The base two logarithm of the sigma
         map, which indicates the amount of summarization in each location. Doesn't have
         to have the same shape as the feature tensors.
+    weights
+        One weight per feature tensor, used to form the weighted sum of the distortion
+        values across feature tensors. If ``None``, all weights are 1.
     num_levels
         The number of multi-scale levels of the feature statistics to compute. Must be
         greater than or equal to the maximum of `log2_sigma`.
@@ -171,9 +175,16 @@ def multi_wasserstein_distortion(
             f"`features_a` and `features_b` must have same length, but received "
             f"{len(features_a)} and {len(features_b)}, respectively."
         )
+    if weights is None:
+        weights = [1.0] * len(features_a)
+    elif len(weights) != len(features_a):
+        raise ValueError(
+            f"`weights` must have the same length as the feature lists, but received "
+            f"{len(weights)} and {len(features_a)}, respectively."
+        )
 
     dist = log2_sigma.new_zeros(())
-    for fa, fb in zip(features_a, features_b):
+    for fa, fb, w in zip(features_a, features_b, weights):
         # Resize the sigma map to match the feature tensors.
         ls = F.interpolate(
             log2_sigma, size=fa.shape[-2:], mode="bilinear", antialias=True
@@ -186,7 +197,7 @@ def multi_wasserstein_distortion(
         log_ratio_w = math.log2(log2_sigma.shape[-1] / fa.shape[-1])
         mean_log_ratio = (log_ratio_h + log_ratio_w) / 2
         ls = F.relu(ls - mean_log_ratio)
-        dist = dist + wasserstein_distortion(
+        dist = dist + w * wasserstein_distortion(
             fa, fb, ls, num_levels=num_levels, sqrt_grad_limit=sqrt_grad_limit
         )
     return dist
@@ -202,6 +213,7 @@ class WassersteinDistortion(nn.Module):
     def __init__(
         self,
         features: FeatureExtractor,
+        weights: Sequence[float] | None = None,
         num_levels: int = 5,
         sqrt_grad_limit: float = 1e6,
     ):
@@ -211,6 +223,10 @@ class WassersteinDistortion(nn.Module):
         ----------
         features
             Feature extractor, mapping an image to a sequence of feature tensors.
+        weights
+            One weight per feature tensor returned by `features`, used to form the
+            weighted sum of the distortion values across feature tensors. If ``None``,
+            all weights are 1.
         num_levels
             The number of multi-scale levels of the feature statistics to compute. Must
             be greater than or equal to the maximum of the `log2_sigma` passed to
@@ -221,6 +237,7 @@ class WassersteinDistortion(nn.Module):
         """
         super().__init__()
         self.features = features
+        self.weights = None if weights is None else tuple(weights)
         self.num_levels = num_levels
         self.sqrt_grad_limit = sqrt_grad_limit
 
@@ -253,6 +270,7 @@ class WassersteinDistortion(nn.Module):
             self.features(image_a),
             self.features(image_b),
             log2_sigma,
+            weights=self.weights,
             num_levels=self.num_levels,
             sqrt_grad_limit=self.sqrt_grad_limit,
         )
@@ -278,6 +296,7 @@ class VGG16WassersteinDistortion(WassersteinDistortion):
     def __init__(
         self,
         num_scales: int = 3,
+        image_weight: float = 20.0,
         num_levels: int = 5,
         sqrt_grad_limit: float = 1e6,
         pretrained: bool = True,
@@ -290,6 +309,9 @@ class VGG16WassersteinDistortion(WassersteinDistortion):
             The number of scales of the image the features should be computed on. The
             image will be downsampled ``num_scales - 1`` times and VGG features computed
             on the original image plus the downsampled versions.
+        image_weight
+            Weight of the distortion computed on the image itself (i.e., on pixels),
+            relative to the VGG feature maps, which each have weight 1.
         num_levels
             The number of multi-scale levels of the feature statistics to compute. Must
             be greater than or equal to the maximum of the `log2_sigma` passed to
@@ -301,10 +323,13 @@ class VGG16WassersteinDistortion(WassersteinDistortion):
             Whether to load pretrained ImageNet weights. If ``False``, the weights are
             randomly initialized, which is useful for unit testing.
         """
+        features = pretrained_features.VGG16Features(
+            num_scales=num_scales, pretrained=pretrained
+        )
+        num_vgg_features = num_scales * len(features.layer_names)
         super().__init__(
-            pretrained_features.VGG16Features(
-                num_scales=num_scales, pretrained=pretrained
-            ),
+            features,
+            weights=[image_weight] + [1.0] * num_vgg_features,
             num_levels=num_levels,
             sqrt_grad_limit=sqrt_grad_limit,
         )

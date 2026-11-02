@@ -265,6 +265,44 @@ def test_multi_wasserstein_distortion_behavior():
         )
 
 
+def test_multi_wasserstein_distortion_weights():
+    """Verifies the weighting of feature tensors in multi_wasserstein_distortion().
+
+    Checks
+    ------
+    - The result equals the weighted sum of the per-tensor distortions.
+    - Unit weights give the same result as no weights.
+    - The function raises an error if the number of weights is wrong.
+    """
+    generator = torch.Generator().manual_seed(0)
+    shapes = [(1, 2, 32, 32), (1, 2, 16, 16)]
+    features_a = [torch.rand(s, generator=generator) for s in shapes]
+    features_b = [torch.rand(s, generator=generator) for s in shapes]
+    log2_sigma = 2 * torch.rand(1, 1, 32, 32, generator=generator)
+
+    parts = [
+        wasserstein.multi_wasserstein_distortion([fa], [fb], log2_sigma)
+        for fa, fb in zip(features_a, features_b)
+    ]
+    result = wasserstein.multi_wasserstein_distortion(
+        features_a, features_b, log2_sigma, weights=[0.5, 3.0]
+    )
+    torch.testing.assert_close(result, 0.5 * parts[0] + 3.0 * parts[1])
+
+    unweighted = wasserstein.multi_wasserstein_distortion(
+        features_a, features_b, log2_sigma
+    )
+    result = wasserstein.multi_wasserstein_distortion(
+        features_a, features_b, log2_sigma, weights=[1.0, 1.0]
+    )
+    torch.testing.assert_close(result, unweighted)
+
+    with pytest.raises(ValueError):
+        wasserstein.multi_wasserstein_distortion(
+            features_a, features_b, log2_sigma, weights=[1.0]
+        )
+
+
 def test_multi_wasserstein_sigma_scaling(monkeypatch):
     """Validates sigma map scaling for feature tensors with different resolutions.
 
@@ -400,3 +438,27 @@ def test_vgg16_wasserstein_distortion_can_be_called():
     dist.backward()
     assert image_b.grad is not None
     assert torch.all(torch.isfinite(image_b.grad))
+
+
+def test_vgg16_wasserstein_distortion_image_weight():
+    """Verifies that `image_weight` only scales the distortion on the image itself."""
+    torch.manual_seed(0)
+    base = wasserstein.VGG16WassersteinDistortion(
+        num_scales=2, image_weight=1.0, pretrained=False
+    )
+    weighted = wasserstein.VGG16WassersteinDistortion(
+        num_scales=2, image_weight=3.0, pretrained=False
+    )
+    weighted.load_state_dict(base.state_dict())
+    assert weighted.weights == (3.0,) + (1.0,) * 10
+
+    image_a = torch.rand(1, 3, 64, 64)
+    image_b = torch.rand(1, 3, 64, 64)
+    log2_sigma = torch.full((1, 1, 64, 64), 3.0)
+    pixel_dist = wasserstein.multi_wasserstein_distortion(
+        [image_a], [image_b], log2_sigma
+    )
+    torch.testing.assert_close(
+        weighted(image_a, image_b, log2_sigma),
+        base(image_a, image_b, log2_sigma) + 2.0 * pixel_dist,
+    )
