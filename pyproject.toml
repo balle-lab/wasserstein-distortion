@@ -113,7 +113,7 @@ overgeneral-exceptions = ["builtins.BaseException", "builtins.Exception"]
 
 [tool.pylint.format]
 expected-line-ending-format = "LF"
-ignore-long-lines = "^\\s*(# )?<?https?://\\S+>?$|# type: ignore|# pylint: disable"
+ignore-long-lines = "^\\s*(# )?<?https?://\\S+>?$|# type: ignore|# pylint: disable|# pyright: ignore"
 indent-after-paren = 4
 indent-string = "    "
 max-line-length = 90

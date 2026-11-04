@@ -26,7 +26,7 @@ ArrayLike = jax.typing.ArrayLike
 
 
 def compute_multiscale_stats(
-    features: ArrayLike,
+    features: Array,
     num_levels: int,
 ) -> tuple[list[Array], list[Array]]:
     """Computes local mean and variance of a feature array."""
@@ -45,8 +45,8 @@ def compute_multiscale_stats(
 
 @overload
 def wasserstein_distortion(
-    features_a: ArrayLike,
-    features_b: ArrayLike,
+    features_a: Array,
+    features_b: Array,
     log2_sigma: Array,
     *,
     weight: ArrayLike = 1.0,
@@ -58,8 +58,8 @@ def wasserstein_distortion(
 
 @overload
 def wasserstein_distortion(
-    features_a: ArrayLike,
-    features_b: ArrayLike,
+    features_a: Array,
+    features_b: Array,
     log2_sigma: Array,
     *,
     weight: ArrayLike = 1.0,
@@ -70,8 +70,8 @@ def wasserstein_distortion(
 
 
 def wasserstein_distortion(
-    features_a: ArrayLike,
-    features_b: ArrayLike,
+    features_a: Array,
+    features_b: Array,
     log2_sigma: Array,
     *,
     weight: ArrayLike = 1.0,
@@ -152,7 +152,7 @@ def wasserstein_distortion(
     means_b, variances_b = compute_multiscale_stats(features_b, num_levels)
     assert len(means_a) == len(means_b) == len(variances_a) == len(variances_b)
 
-    wd_maps = [jnp.square(features_a - features_b)]  # type: ignore
+    wd_maps = [jnp.square(features_a - features_b)]
     for ma, mb, va, vb in zip(means_a, means_b, variances_a, variances_b):
         assert ma.shape == mb.shape == va.shape == vb.shape
         # Variance estimates can turn out slightly negative due to numerics. This brings
@@ -176,7 +176,7 @@ def wasserstein_distortion(
         intermediates["weights"].append(level_weight)
         channel_dist += jnp.mean(level_weight * wd_map, axis=(-2, -1))
         if i > 0:
-            log2_sigma = helpers.lowpass(log2_sigma[None], stride=2).squeeze(0)
+            log2_sigma = helpers.lowpass(log2_sigma, stride=2)
     dist = jnp.mean(weight * channel_dist)
 
     if return_intermediates:
