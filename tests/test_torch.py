@@ -303,6 +303,74 @@ def test_multi_wasserstein_distortion_weights():
         )
 
 
+def test_wasserstein_distortion_channel_weight():
+    """Verifies per-channel weighting in wasserstein_distortion().
+
+    Checks
+    ------
+    - A vector weight gives the weighted mean of the per-channel distortions.
+    - A scalar weight scales the distortion.
+    - The function raises an error if the weight has the wrong shape.
+    """
+    generator = torch.Generator().manual_seed(0)
+    features_a = torch.rand(2, 3, 32, 32, generator=generator)
+    features_b = torch.rand(2, 3, 32, 32, generator=generator)
+    log2_sigma = 2 * torch.rand(2, 1, 32, 32, generator=generator)
+
+    channels = torch.stack(
+        [
+            wasserstein.wasserstein_distortion(
+                features_a[:, c : c + 1], features_b[:, c : c + 1], log2_sigma
+            )
+            for c in range(3)
+        ]
+    )
+    weight = torch.tensor([0.5, 2.0, 4.0])
+    result = wasserstein.wasserstein_distortion(
+        features_a, features_b, log2_sigma, weight=weight
+    )
+    torch.testing.assert_close(result, torch.mean(weight * channels))
+
+    unweighted = wasserstein.wasserstein_distortion(features_a, features_b, log2_sigma)
+    torch.testing.assert_close(unweighted, torch.mean(channels))
+    result = wasserstein.wasserstein_distortion(
+        features_a, features_b, log2_sigma, weight=3.0
+    )
+    torch.testing.assert_close(result, 3.0 * unweighted)
+
+    for bad_weight in (torch.ones(2), torch.ones(3, 1)):
+        with pytest.raises(ValueError):
+            wasserstein.wasserstein_distortion(
+                features_a, features_b, log2_sigma, weight=bad_weight
+            )
+
+
+def test_multi_wasserstein_distortion_mixed_weights():
+    """Verifies that multi_wasserstein_distortion() accepts mixed scalar/vector weights."""
+    generator = torch.Generator().manual_seed(0)
+    shapes = [(1, 3, 32, 32), (1, 2, 16, 16)]
+    features_a = [torch.rand(s, generator=generator) for s in shapes]
+    features_b = [torch.rand(s, generator=generator) for s in shapes]
+    log2_sigma = 2 * torch.rand(1, 1, 32, 32, generator=generator)
+
+    vector = torch.tensor([0.5, 2.0, 4.0])
+    part_0 = wasserstein.multi_wasserstein_distortion(
+        features_a[:1], features_b[:1], log2_sigma, weights=[vector]
+    )
+    part_1 = wasserstein.multi_wasserstein_distortion(
+        features_a[1:], features_b[1:], log2_sigma
+    )
+    result = wasserstein.multi_wasserstein_distortion(
+        features_a, features_b, log2_sigma, weights=[vector, 3.0]
+    )
+    torch.testing.assert_close(result, part_0 + 3.0 * part_1)
+
+    with pytest.raises(ValueError):
+        wasserstein.multi_wasserstein_distortion(
+            features_a, features_b, log2_sigma, weights=[1.0, vector]
+        )
+
+
 def test_multi_wasserstein_sigma_scaling(monkeypatch):
     """Validates sigma map scaling for feature tensors with different resolutions.
 

@@ -49,6 +49,7 @@ def wasserstein_distortion(
     features_b: ArrayLike,
     log2_sigma: Array,
     *,
+    weight: ArrayLike = 1.0,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
     return_intermediates: Literal[False] = False,
@@ -61,6 +62,7 @@ def wasserstein_distortion(
     features_b: ArrayLike,
     log2_sigma: Array,
     *,
+    weight: ArrayLike = 1.0,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
     return_intermediates: Literal[True],
@@ -72,6 +74,7 @@ def wasserstein_distortion(
     features_b: ArrayLike,
     log2_sigma: Array,
     *,
+    weight: ArrayLike = 1.0,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
     return_intermediates: bool = False,
@@ -90,6 +93,10 @@ def wasserstein_distortion(
         Array of shape ``(height, width)``. The base two logarithm of the sigma map, which
         indicates the amount of summarization in each location. Must have the same height
         and width as the feature arrays.
+    weight
+        Scalar or vector of shape ``(channels,)``. If a vector, each element is applied to
+        the distortion in the corresponding feature channel. The distortion is the mean
+        of the weighted per-channel distortions.
     num_levels
         The number of multi-scale levels of the feature statistics to compute. Must be
         greater than or equal to the maximum of `log2_sigma`.
@@ -134,6 +141,12 @@ def wasserstein_distortion(
 
     if not isinstance(log2_sigma, jax.core.Tracer) and jnp.max(log2_sigma) > num_levels:
         raise ValueError(f"Must have max(log2_sigma) <= {num_levels}.")
+    weight = jnp.asarray(weight)
+    if weight.ndim > 1 or (weight.ndim == 1 and weight.shape[0] != features_a.shape[-3]):
+        raise ValueError(
+            f"`weight` must be a scalar or a vector with one element per channel "
+            f"({features_a.shape[-3]}), but received shape {weight.shape}."
+        )
 
     means_a, variances_a = compute_multiscale_stats(features_a, num_levels)
     means_b, variances_b = compute_multiscale_stats(features_b, num_levels)
@@ -153,16 +166,18 @@ def wasserstein_distortion(
         wd_maps.append(jnp.square(ma - mb) + jnp.square(sa - sb))
     assert len(wd_maps) == num_levels + 1
 
-    dist = jnp.zeros(())
+    # Accumulate the distortion per channel, so the channel weights can be applied once.
+    channel_dist = jnp.zeros(features_a.shape[-3])
     intermediates = collections.defaultdict(list)
     intermediates.update(wd_maps=wd_maps)
     for i, wd_map in enumerate(wd_maps):
         assert wd_map.shape[-2:] == log2_sigma.shape
-        weight = jax.nn.relu(1 - abs(log2_sigma - i))
-        intermediates["weights"].append(weight)
-        dist += jnp.mean(weight * wd_map)
+        level_weight = jax.nn.relu(1 - abs(log2_sigma - i))
+        intermediates["weights"].append(level_weight)
+        channel_dist += jnp.mean(level_weight * wd_map, axis=(-2, -1))
         if i > 0:
             log2_sigma = helpers.lowpass(log2_sigma[None], stride=2).squeeze(0)
+    dist = jnp.mean(weight * channel_dist)
 
     if return_intermediates:
         return dist, intermediates
@@ -226,7 +241,10 @@ def multi_wasserstein_distortion(
         same shape as the feature arrays.
     weights
         One weight per feature array, used to form the weighted sum of the distortion
-        values across feature arrays. If ``None``, all weights are 1.
+        values across feature arrays. Each weight can be a scalar, or a vector of shape
+        ``(channels,)`` which weights each channel of the corresponding feature array
+        separately (see `wasserstein_distortion`). Scalars and vectors can be mixed. If
+        ``None``, all weights are 1.
     num_levels
         The number of multi-scale levels of the feature statistics to compute. Must be
         greater than or equal to the maximum of `log2_sigma`.
@@ -293,11 +311,12 @@ def multi_wasserstein_distortion(
             fa,
             fb,
             ls,
+            weight=w,
             num_levels=num_levels,
             sqrt_grad_limit=sqrt_grad_limit,
             return_intermediates=True,
         )
-        dist += w * d
+        dist += d
         for i in s:
             intermediates[i].append(s[i])
 
@@ -339,7 +358,8 @@ def vgg16_wasserstein_distortion(
         features will be used to compute the distortion.
     image_weight
         Weight of the distortion computed on the image itself (i.e., on pixels), relative
-        to the VGG feature maps, which each have weight 1.
+        to the VGG feature maps, which each have weight 1. Can be a scalar, or a vector of
+        shape ``(3,)`` to weight each color channel separately.
     num_levels
         The number of multi-scale levels of the feature statistics to compute. Must be
         greater than or equal to the maximum of `log2_sigma`.

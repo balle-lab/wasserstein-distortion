@@ -14,4 +14,4 @@
 
 # Framework-specific code lives in the `jax` and `torch` subpackages. Do not import them
 # here, so that the package works with only one of the frameworks installed.
-__version__ = "0.2.2"
+__version__ = "0.2.3"

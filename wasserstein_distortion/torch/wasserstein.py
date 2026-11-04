@@ -48,6 +48,7 @@ def wasserstein_distortion(
     features_b: Tensor,
     log2_sigma: Tensor,
     *,
+    weight: float | Tensor = 1.0,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
 ) -> Tensor:
@@ -65,6 +66,10 @@ def wasserstein_distortion(
         Tensor of shape ``(batch, 1, height, width)``. The base two logarithm of the sigma
         map, which indicates the amount of summarization in each location. Must have the
         same height and width as the feature tensors.
+    weight
+        Scalar or vector of shape ``(channels,)``. If a vector, each element is applied to
+        the distortion in the corresponding feature channel. The distortion is the mean
+        of the weighted per-channel distortions.
     num_levels
         The number of multi-scale levels of the feature statistics to compute. Must be
         greater than or equal to the maximum of `log2_sigma` (not checked, to avoid a
@@ -102,6 +107,12 @@ def wasserstein_distortion(
             f"features and `log2_sigma` must have same spatial shape, but received "
             f"{features_a.shape[-2:]} and {log2_sigma.shape[-2:]}, respectively."
         )
+    weight = torch.as_tensor(weight, dtype=features_a.dtype, device=features_a.device)
+    if weight.ndim > 1 or (weight.ndim == 1 and weight.shape[0] != features_a.shape[-3]):
+        raise ValueError(
+            f"`weight` must be a scalar or a vector with one element per channel "
+            f"({features_a.shape[-3]}), but received shape {tuple(weight.shape)}."
+        )
 
     means_a, variances_a = compute_multiscale_stats(features_a, num_levels)
     means_b, variances_b = compute_multiscale_stats(features_b, num_levels)
@@ -118,13 +129,14 @@ def wasserstein_distortion(
         sb = helpers.safe_sqrt(vb, sqrt_grad_limit)
         wd_maps.append(torch.square(ma - mb) + torch.square(sa - sb))
 
-    dist = features_a.new_zeros(())
+    # Accumulate the distortion per channel, so the channel weights can be applied once.
+    channel_dist = features_a.new_zeros(features_a.shape[-3])
     for i, wd_map in enumerate(wd_maps):
-        weight = F.relu(1 - torch.abs(log2_sigma - i))
-        dist = dist + torch.mean(weight * wd_map)
+        level_weight = F.relu(1 - torch.abs(log2_sigma - i))
+        channel_dist += torch.mean(level_weight * wd_map, dim=(0, 2, 3))
         if i > 0:
             log2_sigma = helpers.lowpass(log2_sigma, stride=2)
-    return dist
+    return torch.mean(weight * channel_dist)
 
 
 def multi_wasserstein_distortion(
@@ -132,7 +144,7 @@ def multi_wasserstein_distortion(
     features_b: Sequence[Tensor],
     log2_sigma: Tensor,
     *,
-    weights: Sequence[float] | None = None,
+    weights: Sequence[float | Tensor] | None = None,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
 ) -> Tensor:
@@ -157,7 +169,10 @@ def multi_wasserstein_distortion(
         to have the same shape as the feature tensors.
     weights
         One weight per feature tensor, used to form the weighted sum of the distortion
-        values across feature tensors. If ``None``, all weights are 1.
+        values across feature tensors. Each weight can be a scalar, or a vector of shape
+        ``(channels,)`` which weights each channel of the corresponding feature tensor
+        separately (see `wasserstein_distortion`). Scalars and vectors can be mixed. If
+        ``None``, all weights are 1.
     num_levels
         The number of multi-scale levels of the feature statistics to compute. Must be
         greater than or equal to the maximum of `log2_sigma`.
@@ -197,8 +212,13 @@ def multi_wasserstein_distortion(
         log_ratio_w = math.log2(log2_sigma.shape[-1] / fa.shape[-1])
         mean_log_ratio = (log_ratio_h + log_ratio_w) / 2
         ls = F.relu(ls - mean_log_ratio)
-        dist = dist + w * wasserstein_distortion(
-            fa, fb, ls, num_levels=num_levels, sqrt_grad_limit=sqrt_grad_limit
+        dist = dist + wasserstein_distortion(
+            fa,
+            fb,
+            ls,
+            weight=w,
+            num_levels=num_levels,
+            sqrt_grad_limit=sqrt_grad_limit,
         )
     return dist
 
@@ -213,7 +233,7 @@ class WassersteinDistortion(nn.Module):
     def __init__(
         self,
         features: FeatureExtractor,
-        weights: Sequence[float] | None = None,
+        weights: Sequence[float | Tensor] | None = None,
         num_levels: int = 5,
         sqrt_grad_limit: float = 1e6,
     ):
@@ -225,8 +245,9 @@ class WassersteinDistortion(nn.Module):
             Feature extractor, mapping an image to a sequence of feature tensors.
         weights
             One weight per feature tensor returned by `features`, used to form the
-            weighted sum of the distortion values across feature tensors. If ``None``,
-            all weights are 1.
+            weighted sum of the distortion values across feature tensors. Each weight
+            can be a scalar, or a vector with one element per channel of the
+            corresponding feature tensor. If ``None``, all weights are 1.
         num_levels
             The number of multi-scale levels of the feature statistics to compute. Must
             be greater than or equal to the maximum of the `log2_sigma` passed to
@@ -296,7 +317,7 @@ class VGG16WassersteinDistortion(WassersteinDistortion):
     def __init__(
         self,
         num_scales: int = 3,
-        image_weight: float = 20.0,
+        image_weight: float | Tensor = 20.0,
         num_levels: int = 5,
         sqrt_grad_limit: float = 1e6,
         pretrained: bool = True,
@@ -311,7 +332,8 @@ class VGG16WassersteinDistortion(WassersteinDistortion):
             on the original image plus the downsampled versions.
         image_weight
             Weight of the distortion computed on the image itself (i.e., on pixels),
-            relative to the VGG feature maps, which each have weight 1.
+            relative to the VGG feature maps, which each have weight 1. Can be a scalar,
+            or a vector of shape ``(3,)`` to weight each color channel separately.
         num_levels
             The number of multi-scale levels of the feature statistics to compute. Must
             be greater than or equal to the maximum of the `log2_sigma` passed to

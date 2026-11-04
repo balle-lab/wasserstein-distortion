@@ -282,6 +282,72 @@ def test_multi_wasserstein_distortion_weights():
         )
 
 
+def test_wasserstein_distortion_channel_weight():
+    """Verifies per-channel weighting in wasserstein_distortion().
+
+    Checks
+    ------
+    - A vector weight gives the weighted mean of the per-channel distortions.
+    - A scalar weight scales the distortion.
+    - The function raises an error if the weight has the wrong shape.
+    """
+    key_a, key_b, key_s = jax.random.split(jax.random.key(0), 3)
+    features_a = jax.random.uniform(key_a, (3, 32, 32))
+    features_b = jax.random.uniform(key_b, (3, 32, 32))
+    log2_sigma = 2 * jax.random.uniform(key_s, (32, 32))
+
+    channels = [
+        wasserstein.wasserstein_distortion(
+            features_a[c : c + 1], features_b[c : c + 1], log2_sigma
+        )
+        for c in range(3)
+    ]
+    weight = jnp.array([0.5, 2.0, 4.0])
+    result = wasserstein.wasserstein_distortion(
+        features_a, features_b, log2_sigma, weight=weight
+    )
+    assert jnp.allclose(result, jnp.mean(weight * jnp.stack(channels)))
+
+    unweighted = wasserstein.wasserstein_distortion(features_a, features_b, log2_sigma)
+    assert jnp.allclose(unweighted, jnp.mean(jnp.stack(channels)))
+    result = wasserstein.wasserstein_distortion(
+        features_a, features_b, log2_sigma, weight=3.0
+    )
+    assert jnp.allclose(result, 3.0 * unweighted)
+
+    for bad_weight in (jnp.ones(2), jnp.ones((3, 1))):
+        with pytest.raises(ValueError):
+            _ = wasserstein.wasserstein_distortion(
+                features_a, features_b, log2_sigma, weight=bad_weight
+            )
+
+
+def test_multi_wasserstein_distortion_mixed_weights():
+    """Verifies that multi_wasserstein_distortion() accepts mixed scalar/vector weights."""
+    keys = jax.random.split(jax.random.key(0), 5)
+    shapes = [(3, 32, 32), (2, 16, 16)]
+    features_a = [jax.random.uniform(k, s) for k, s in zip(keys[:2], shapes)]
+    features_b = [jax.random.uniform(k, s) for k, s in zip(keys[2:4], shapes)]
+    log2_sigma = 2 * jax.random.uniform(keys[4], (32, 32))
+
+    vector = jnp.array([0.5, 2.0, 4.0])
+    part_0 = wasserstein.multi_wasserstein_distortion(
+        features_a[:1], features_b[:1], log2_sigma, weights=[vector]
+    )
+    part_1 = wasserstein.multi_wasserstein_distortion(
+        features_a[1:], features_b[1:], log2_sigma
+    )
+    result = wasserstein.multi_wasserstein_distortion(
+        features_a, features_b, log2_sigma, weights=[vector, 3.0]
+    )
+    assert jnp.allclose(result, part_0 + 3.0 * part_1)
+
+    with pytest.raises(ValueError):
+        _ = wasserstein.multi_wasserstein_distortion(
+            features_a, features_b, log2_sigma, weights=[1.0, vector]
+        )
+
+
 def test_compute_multiscale_stats_non_constant():
     """Verifies variance computation on non-uniform input (checkerboard pattern).
 
