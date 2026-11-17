@@ -536,3 +536,98 @@ def test_vgg16_wasserstein_distortion_image_weight():
         weighted(image_a, image_b, log2_sigma),
         base(image_a, image_b, log2_sigma) + 2.0 * pixel_dist,
     )
+
+
+@pytest.mark.parametrize("size", [(32, 32), (37, 29)])
+def test_wasserstein_distortion_wd_map(size):
+    """Verifies the distortion map returned when `return_wd_map` is a shape.
+
+    Checks
+    ------
+    - The maps have shape ``(batch, *requested_shape)``.
+    - Their spatial means approximately equal the per-example distortion values.
+    - Each map equals the map of the corresponding example computed on its own.
+    - They are zero for identical features.
+    - With zero sigma, they are the per-pixel squared error, averaged over channels.
+    - The function raises an error if `return_wd_map` is not a spatial shape.
+    """
+    generator = torch.Generator().manual_seed(0)
+    features_a = torch.randn(2, 4, *size, generator=generator, dtype=torch.float64)
+    features_b = torch.randn(2, 4, *size, generator=generator, dtype=torch.float64)
+    log2_sigma = 5 * torch.rand(2, 1, *size, generator=generator, dtype=torch.float64)
+    weight = torch.tensor([1.0, 3.0, 0.5, 2.0], dtype=torch.float64)
+
+    dist = wasserstein.wasserstein_distortion(
+        features_a, features_b, log2_sigma, weight=weight
+    )
+    for shape in [size, (2 * size[0], 2 * size[1])]:
+        wd_map = wasserstein.wasserstein_distortion(
+            features_a, features_b, log2_sigma, weight=weight, return_wd_map=shape
+        )
+        assert wd_map.shape == (2, *shape)
+        torch.testing.assert_close(wd_map.mean(dim=(1, 2)), dist, rtol=1e-3, atol=0.0)
+
+    wd_map = wasserstein.wasserstein_distortion(
+        features_a, features_b, log2_sigma, weight=weight, return_wd_map=size
+    )
+    for i in range(2):
+        torch.testing.assert_close(
+            wd_map[i : i + 1],
+            wasserstein.wasserstein_distortion(
+                features_a[i : i + 1],
+                features_b[i : i + 1],
+                log2_sigma[i : i + 1],
+                weight=weight,
+                return_wd_map=size,
+            ),
+        )
+
+    wd_map = wasserstein.wasserstein_distortion(
+        features_a, features_a, log2_sigma, return_wd_map=size
+    )
+    torch.testing.assert_close(wd_map, torch.zeros_like(wd_map))
+
+    wd_map = wasserstein.wasserstein_distortion(
+        features_a, features_b, torch.zeros_like(log2_sigma), return_wd_map=size
+    )
+    torch.testing.assert_close(
+        wd_map, torch.mean(torch.square(features_a - features_b), dim=1)
+    )
+
+    with pytest.raises(ValueError):
+        wasserstein.wasserstein_distortion(
+            features_a, features_b, log2_sigma, return_wd_map=(32,)
+        )
+
+
+def test_multi_wasserstein_distortion_wd_map():
+    """Verifies the distortion map returned by multi_wasserstein_distortion()."""
+    generator = torch.Generator().manual_seed(0)
+    shapes = [(2, 3, 64, 48), (2, 8, 32, 24), (2, 16, 16, 12), (2, 16, 15, 11)]
+    features_a = [torch.randn(*s, generator=generator) for s in shapes]
+    features_b = [torch.randn(*s, generator=generator) for s in shapes]
+    log2_sigma = 5 * torch.rand(2, 1, 32, 24, generator=generator)
+    weights = [20.0, 1.0, torch.ones(16), 1.0]
+
+    dist = wasserstein.multi_wasserstein_distortion(
+        features_a, features_b, log2_sigma, weights=weights
+    )
+    wd_map = wasserstein.multi_wasserstein_distortion(
+        features_a, features_b, log2_sigma, weights=weights, return_wd_map=(64, 48)
+    )
+    assert wd_map.shape == (2, 64, 48)
+    torch.testing.assert_close(wd_map.mean(dim=(1, 2)), dist, rtol=1e-3, atol=0.0)
+
+
+def test_vgg16_wasserstein_distortion_wd_map():
+    """Verifies the distortion map returned by VGG16WassersteinDistortion."""
+    torch.manual_seed(0)
+    module = wasserstein.VGG16WassersteinDistortion(pretrained=False)
+    image_a = torch.rand(2, 3, 64, 64)
+    image_b = torch.rand(2, 3, 64, 64)
+    log2_sigma = torch.full((2, 1, 64, 64), 3.0)
+
+    dist = module(image_a, image_b, log2_sigma)
+    wd_map = module(image_a, image_b, log2_sigma, return_wd_map=(64, 64))
+    assert wd_map.shape == (2, 64, 64)
+    torch.testing.assert_close(wd_map.mean(dim=(1, 2)), dist, rtol=1e-3, atol=0.0)

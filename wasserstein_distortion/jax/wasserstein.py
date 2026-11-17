@@ -52,6 +52,7 @@ def wasserstein_distortion(
     weight: ArrayLike = 1.0,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
+    return_wd_map: tuple[int, int] | None = None,
     return_intermediates: Literal[False] = False,
 ) -> Array: ...
 
@@ -65,6 +66,7 @@ def wasserstein_distortion(
     weight: ArrayLike = 1.0,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
+    return_wd_map: tuple[int, int] | None = None,
     return_intermediates: Literal[True],
 ) -> tuple[Array, dict[str, Any]]: ...
 
@@ -77,6 +79,7 @@ def wasserstein_distortion(
     weight: ArrayLike = 1.0,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
+    return_wd_map: tuple[int, int] | None = None,
     return_intermediates: bool = False,
 ) -> Array | tuple[Array, dict[str, Any]]:
     """Evaluates Wasserstein Distortion between two feature arrays.
@@ -103,6 +106,13 @@ def wasserstein_distortion(
     sqrt_grad_limit
         Upper limit for the gradient of the square root applied to the empirical feature
         variance estimates, for numerical stability.
+    return_wd_map
+        If ``None``, returns the scalar distortion value. If a spatial shape
+        ``(height, width)``, returns a distortion map of that shape instead, which
+        aggregates the distortion across channels and multi-scale levels in the same way
+        as the scalar value, but not across space. The distortion maps of all multi-scale
+        levels are resized to this shape before being summed. The mean of the map is
+        approximately equal to the scalar value.
     return_intermediates
         If ``True``, returns intermediate computations in a dictionary, besides the
         distortion value.
@@ -110,7 +120,7 @@ def wasserstein_distortion(
     Returns
     -------
     Array
-        Scalar distortion value.
+        Scalar distortion value, or distortion map (if `return_wd_map` is a shape).
     dict
         Dictionary containing intermediate computations (if `return_intermediates`).
 
@@ -141,6 +151,11 @@ def wasserstein_distortion(
 
     if not isinstance(log2_sigma, jax.core.Tracer) and jnp.max(log2_sigma) > num_levels:
         raise ValueError(f"Must have max(log2_sigma) <= {num_levels}.")
+    if return_wd_map is not None and len(return_wd_map) != 2:
+        raise ValueError(
+            f"`return_wd_map` must be None or a spatial shape (height, width), but "
+            f"received {return_wd_map}."
+        )
     weight = jnp.asarray(weight)
     if weight.ndim > 1 or (weight.ndim == 1 and weight.shape[0] != features_a.shape[-3]):
         raise ValueError(
@@ -167,17 +182,29 @@ def wasserstein_distortion(
     assert len(wd_maps) == num_levels + 1
 
     # Accumulate the distortion per channel, so the channel weights can be applied once.
-    channel_dist = jnp.zeros(features_a.shape[-3])
+    num_channels = features_a.shape[-3]
+    if return_wd_map is None:
+        channel_dist = jnp.zeros(num_channels)
+    else:
+        channel_dist = jnp.zeros((num_channels, *return_wd_map))
     intermediates = collections.defaultdict(list)
     intermediates.update(wd_maps=wd_maps)
     for i, wd_map in enumerate(wd_maps):
         assert wd_map.shape[-2:] == log2_sigma.shape
         level_weight = jax.nn.relu(1 - abs(log2_sigma - i))
         intermediates["weights"].append(level_weight)
-        channel_dist += jnp.mean(level_weight * wd_map, axis=(-2, -1))
+        if return_wd_map is None:
+            channel_dist += jnp.mean(level_weight * wd_map, axis=(-2, -1))
+        else:
+            channel_dist += jax.image.resize(
+                level_weight * wd_map, channel_dist.shape, "linear", antialias=True
+            )
         if i > 0:
             log2_sigma = helpers.lowpass(log2_sigma, stride=2)
-    dist = jnp.mean(weight * channel_dist)
+    if return_wd_map is None:
+        dist = jnp.mean(weight * channel_dist)
+    else:
+        dist = jnp.mean(jnp.reshape(weight, (-1, 1, 1)) * channel_dist, axis=0)
 
     if return_intermediates:
         return dist, intermediates
@@ -193,6 +220,7 @@ def multi_wasserstein_distortion(
     weights: Sequence[ArrayLike] | None = None,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
+    return_wd_map: tuple[int, int] | None = None,
     return_intermediates: Literal[False] = False,
 ) -> Array: ...
 
@@ -206,6 +234,7 @@ def multi_wasserstein_distortion(
     weights: Sequence[ArrayLike] | None = None,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
+    return_wd_map: tuple[int, int] | None = None,
     return_intermediates: Literal[True],
 ) -> tuple[Array, dict[str, Any]]: ...
 
@@ -218,6 +247,7 @@ def multi_wasserstein_distortion(
     weights: Sequence[ArrayLike] | None = None,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
+    return_wd_map: tuple[int, int] | None = None,
     return_intermediates: bool = False,
 ) -> Array | tuple[Array, dict[str, Any]]:
     """Evaluates Wasserstein Distortion between multiple feature arrays of two images.
@@ -251,6 +281,14 @@ def multi_wasserstein_distortion(
     sqrt_grad_limit
         Upper limit for the gradient of the square root applied to the empirical feature
         variance estimates, for numerical stability.
+    return_wd_map
+        If ``None``, returns the scalar distortion value. If a spatial shape
+        ``(height, width)``, returns a distortion map of that shape instead, which
+        aggregates the distortion across feature arrays, channels and multi-scale levels
+        in the same way as the scalar value, but not across space (see
+        `wasserstein_distortion`). A natural choice is the shape of the largest feature
+        array, or of `log2_sigma`. The mean of the map is approximately equal to the
+        scalar value.
     return_intermediates
         If ``True``, returns intermediate computations in a dictionary, besides the
         distortion value.
@@ -258,7 +296,7 @@ def multi_wasserstein_distortion(
     Returns
     -------
     Array
-        Scalar distortion value.
+        Scalar distortion value, or distortion map (if `return_wd_map` is a shape).
     dict
         Dictionary containing intermediate computations (if `return_intermediates`).
 
@@ -289,7 +327,7 @@ def multi_wasserstein_distortion(
             f"{len(weights)} and {len(features_a)}, respectively."
         )
 
-    dist = jnp.zeros(())
+    dist = jnp.zeros(() if return_wd_map is None else return_wd_map)
     intermediates = collections.defaultdict(list)
     for fa, fb, w in zip(features_a, features_b, weights):
         if fa.shape != fb.shape:
@@ -314,6 +352,7 @@ def multi_wasserstein_distortion(
             weight=w,
             num_levels=num_levels,
             sqrt_grad_limit=sqrt_grad_limit,
+            return_wd_map=return_wd_map,
             return_intermediates=True,
         )
         dist += d
@@ -334,6 +373,7 @@ def vgg16_wasserstein_distortion(
     image_weight: ArrayLike = 20.0,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
+    return_wd_map: tuple[int, int] | None = None,
 ) -> Array:
     """Evaluates VGG-16 Wasserstein Distortion between two images.
 
@@ -366,11 +406,17 @@ def vgg16_wasserstein_distortion(
     sqrt_grad_limit
         Upper limit for the gradient of the square root applied to the empirical feature
         variance estimates, for numerical stability.
+    return_wd_map
+        If ``None``, returns the scalar distortion value. If a spatial shape
+        ``(height, width)``, returns a distortion map of that shape instead, which
+        aggregates the distortion in the same way as the scalar value, but not across
+        space (see `multi_wasserstein_distortion`). A natural choice is the shape of the
+        images. The mean of the map is approximately equal to the scalar value.
 
     Returns
     -------
     Array
-        Scalar distortion value.
+        Scalar distortion value, or distortion map (if `return_wd_map` is a shape).
 
     Notes
     -----
@@ -396,6 +442,7 @@ def vgg16_wasserstein_distortion(
         weights=[image_weight] + [1.0] * (len(features_a) - 1),
         num_levels=num_levels,
         sqrt_grad_limit=sqrt_grad_limit,
+        return_wd_map=return_wd_map,
         return_intermediates=False,
     )
 

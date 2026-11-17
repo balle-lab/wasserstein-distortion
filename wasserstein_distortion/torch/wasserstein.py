@@ -51,6 +51,7 @@ def wasserstein_distortion(
     weight: float | Tensor = 1.0,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
+    return_wd_map: tuple[int, int] | None = None,
 ) -> Tensor:
     """Evaluates Wasserstein Distortion between two feature tensors.
 
@@ -77,11 +78,20 @@ def wasserstein_distortion(
     sqrt_grad_limit
         Upper limit for the gradient of the square root applied to the empirical feature
         variance estimates, for numerical stability.
+    return_wd_map
+        If ``None``, returns one distortion value per example, of shape ``(batch,)``. If a
+        spatial shape ``(height, width)``, returns distortion maps of shape
+        ``(batch, height, width)`` instead, which aggregate the distortion across channels
+        and multi-scale levels in the same way as the distortion values, but not across
+        space. The distortion maps of all multi-scale levels are resized to the given
+        shape before being summed. The spatial mean of each map approximately equals the
+        corresponding distortion value. Averaging across the batch is left to the caller.
 
     Returns
     -------
     Tensor
-        Distortion values of shape ``(batch,)``.
+        Distortion values of shape ``(batch,)``, or distortion maps of shape
+        ``(batch, height, width)`` (if `return_wd_map` is a shape).
 
     Notes
     -----
@@ -107,6 +117,11 @@ def wasserstein_distortion(
             f"features and `log2_sigma` must have same spatial shape, but received "
             f"{features_a.shape[-2:]} and {log2_sigma.shape[-2:]}, respectively."
         )
+    if return_wd_map is not None and len(return_wd_map) != 2:
+        raise ValueError(
+            f"`return_wd_map` must be None or a spatial shape (height, width), but "
+            f"received {return_wd_map}."
+        )
     weight = torch.as_tensor(weight, dtype=features_a.dtype, device=features_a.device)
     if weight.ndim > 1 or (weight.ndim == 1 and weight.shape[0] != features_a.shape[-3]):
         raise ValueError(
@@ -131,12 +146,19 @@ def wasserstein_distortion(
 
     # Accumulate the distortion per channel, so the channel weights can be applied once.
     batch = torch.broadcast_shapes(features_a.shape[:1], log2_sigma.shape[:1])[0]
-    channel_dist = features_a.new_zeros(batch, features_a.shape[-3])
+    spatial_shape = () if return_wd_map is None else tuple(return_wd_map)
+    channel_dist = features_a.new_zeros(batch, features_a.shape[-3], *spatial_shape)
     for i, wd_map in enumerate(wd_maps):
         level_weight = F.relu(1 - torch.abs(log2_sigma - i))
-        channel_dist += torch.mean(level_weight * wd_map, dim=(2, 3))
+        if return_wd_map is None:
+            channel_dist += torch.mean(level_weight * wd_map, dim=(2, 3))
+        else:
+            channel_dist += F.interpolate(
+                level_weight * wd_map, size=return_wd_map, mode="bilinear", antialias=True
+            )
         if i > 0:
             log2_sigma = helpers.lowpass(log2_sigma, stride=2)
+    weight = weight.reshape(-1, *(1,) * len(spatial_shape))
     return torch.mean(weight * channel_dist, dim=1)
 
 
@@ -148,6 +170,7 @@ def multi_wasserstein_distortion(
     weights: Sequence[float | Tensor] | None = None,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
+    return_wd_map: tuple[int, int] | None = None,
 ) -> Tensor:
     """Evaluates Wasserstein Distortion between multiple feature tensors of two images.
 
@@ -180,11 +203,21 @@ def multi_wasserstein_distortion(
     sqrt_grad_limit
         Upper limit for the gradient of the square root applied to the empirical feature
         variance estimates, for numerical stability.
+    return_wd_map
+        If ``None``, returns one distortion value per example, of shape ``(batch,)``. If a
+        spatial shape ``(height, width)``, returns distortion maps of shape
+        ``(batch, height, width)`` instead, which aggregate the distortion across feature
+        tensors, channels and multi-scale levels in the same way as the distortion values,
+        but not across space (see `wasserstein_distortion`). A natural choice is the shape
+        of the largest feature tensor, or of `log2_sigma`. The spatial mean of each map
+        approximately equals the corresponding distortion value. Averaging across the
+        batch is left to the caller.
 
     Returns
     -------
     Tensor
-        Distortion values of shape ``(batch,)``.
+        Distortion values of shape ``(batch,)``, or distortion maps of shape
+        ``(batch, height, width)`` (if `return_wd_map` is a shape).
     """
     if len(features_a) != len(features_b):
         raise ValueError(
@@ -199,7 +232,8 @@ def multi_wasserstein_distortion(
             f"{len(weights)} and {len(features_a)}, respectively."
         )
 
-    dist = log2_sigma.new_zeros(log2_sigma.shape[0])
+    spatial_shape = () if return_wd_map is None else tuple(return_wd_map)
+    dist = log2_sigma.new_zeros(log2_sigma.shape[0], *spatial_shape)
     for fa, fb, w in zip(features_a, features_b, weights):
         # Resize the sigma map to match the feature tensors.
         ls = F.interpolate(
@@ -220,6 +254,7 @@ def multi_wasserstein_distortion(
             weight=w,
             num_levels=num_levels,
             sqrt_grad_limit=sqrt_grad_limit,
+            return_wd_map=return_wd_map,
         )
     return dist
 
@@ -264,7 +299,14 @@ class WassersteinDistortion(nn.Module):
         self.sqrt_grad_limit = sqrt_grad_limit
 
     @override
-    def forward(self, image_a: Tensor, image_b: Tensor, log2_sigma: Tensor) -> Tensor:
+    def forward(
+        self,
+        image_a: Tensor,
+        image_b: Tensor,
+        log2_sigma: Tensor,
+        *,
+        return_wd_map: tuple[int, int] | None = None,
+    ) -> Tensor:
         """Computes the distortion.
 
         Parameters
@@ -277,11 +319,20 @@ class WassersteinDistortion(nn.Module):
             Tensor of shape ``(batch, 1, height, width)``. The base two logarithm of the
             sigma map, which indicates the amount of summarization in each location.
             Doesn't have to have the same shape as the images.
+        return_wd_map
+            If ``None``, returns one distortion value per example, of shape ``(batch,)``.
+            If a spatial shape ``(height, width)``, returns distortion maps of shape
+            ``(batch, height, width)`` instead, which aggregate the distortion in the same
+            way as the distortion values, but not across space (see
+            `multi_wasserstein_distortion`). A natural choice is the shape of the images.
+            The spatial mean of each map approximately equals the corresponding distortion
+            value. Averaging across the batch is left to the caller.
 
         Returns
         -------
         Tensor
-            Distortion values of shape ``(batch,)``.
+            Distortion values of shape ``(batch,)``, or distortion maps of shape
+            ``(batch, height, width)`` (if `return_wd_map` is a shape).
         """
         if image_a.shape != image_b.shape:
             raise ValueError(
@@ -295,6 +346,7 @@ class WassersteinDistortion(nn.Module):
             weights=self.weights,
             num_levels=self.num_levels,
             sqrt_grad_limit=self.sqrt_grad_limit,
+            return_wd_map=return_wd_map,
         )
 
 

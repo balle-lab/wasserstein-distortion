@@ -595,3 +595,84 @@ def test_discrete_wasserstein_distortion_behavior():
             centers_h,
             2 * [jnp.array([0.25, 0.5, 1.0])],
         )
+
+
+@pytest.mark.parametrize("size", [(32, 32), (37, 29)])
+def test_wasserstein_distortion_wd_map(size):
+    """Verifies the distortion map returned when `return_wd_map` is a shape.
+
+    Checks
+    ------
+    - The map has the requested shape.
+    - Its mean approximately equals the scalar distortion.
+    - It is zero for identical features.
+    - With zero sigma, it is the per-pixel squared error, averaged over channels.
+    - The function raises an error if `return_wd_map` is not a spatial shape.
+    """
+    key_a, key_b, key_s = jax.random.split(jax.random.key(0), 3)
+    features_a = jax.random.normal(key_a, (4, *size))
+    features_b = jax.random.normal(key_b, (4, *size))
+    log2_sigma = 5 * jax.random.uniform(key_s, size)
+    weight = jnp.array([1.0, 3.0, 0.5, 2.0])
+
+    dist = wasserstein.wasserstein_distortion(
+        features_a, features_b, log2_sigma, weight=weight
+    )
+    for shape in [size, (2 * size[0], 2 * size[1])]:
+        wd_map = wasserstein.wasserstein_distortion(
+            features_a, features_b, log2_sigma, weight=weight, return_wd_map=shape
+        )
+        assert wd_map.shape == shape
+        assert jnp.allclose(jnp.mean(wd_map), dist, rtol=1e-3)
+
+    wd_map = wasserstein.wasserstein_distortion(
+        features_a, features_a, log2_sigma, return_wd_map=size
+    )
+    assert jnp.allclose(wd_map, 0.0)
+
+    wd_map = wasserstein.wasserstein_distortion(
+        features_a, features_b, jnp.zeros(size), return_wd_map=size
+    )
+    assert jnp.allclose(wd_map, jnp.mean(jnp.square(features_a - features_b), axis=0))
+
+    with pytest.raises(ValueError):
+        wasserstein.wasserstein_distortion(
+            features_a, features_b, log2_sigma, return_wd_map=(32,)
+        )
+
+
+def test_multi_wasserstein_distortion_wd_map():
+    """Verifies the distortion map returned by multi_wasserstein_distortion()."""
+    shapes = [(3, 64, 48), (8, 32, 24), (16, 16, 12), (16, 15, 11)]
+    keys = jax.random.split(jax.random.key(0), 2 * len(shapes) + 1)
+    features_a = [jax.random.normal(k, s) for k, s in zip(keys[0::2], shapes)]
+    features_b = [jax.random.normal(k, s) for k, s in zip(keys[1::2], shapes)]
+    # The first feature array is larger than the sigma map, which increases sigma by one.
+    log2_sigma = 4 * jax.random.uniform(keys[-1], (32, 24))
+    weights = [20.0, 1.0, jnp.ones(16), 1.0]
+
+    dist = wasserstein.multi_wasserstein_distortion(
+        features_a, features_b, log2_sigma, weights=weights
+    )
+    wd_map = wasserstein.multi_wasserstein_distortion(
+        features_a, features_b, log2_sigma, weights=weights, return_wd_map=(64, 48)
+    )
+    assert wd_map.shape == (64, 48)
+    assert jnp.allclose(jnp.mean(wd_map), dist, rtol=1e-3)
+
+
+def test_vgg16_wasserstein_distortion_wd_map():
+    """Verifies the distortion map returned by vgg16_wasserstein_distortion()."""
+    pretrained_features.load_vgg16_model(pretrained=False)
+
+    key_a, key_b = jax.random.split(jax.random.key(0))
+    image_a = jax.random.uniform(key_a, (3, 64, 64))
+    image_b = jax.random.uniform(key_b, (3, 64, 64))
+    log2_sigma = jnp.full((64, 64), 3.0)
+
+    dist = wasserstein.vgg16_wasserstein_distortion(image_a, image_b, log2_sigma)
+    wd_map = wasserstein.vgg16_wasserstein_distortion(
+        image_a, image_b, log2_sigma, return_wd_map=(64, 64)
+    )
+    assert wd_map.shape == (64, 64)
+    assert jnp.allclose(jnp.mean(wd_map), dist, rtol=1e-3)

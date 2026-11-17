@@ -107,3 +107,40 @@ def test_torch_matches_jax_full():
     )
 
     np.testing.assert_allclose(loss_torch.item(), loss_jax.item(), rtol=1e-3)
+
+
+def test_wd_maps_match():
+    """Compares distortion maps for single and multiple feature arrays."""
+    shapes = [(3, 64, 48), (8, 32, 24), (16, 15, 11)]
+    fa = [random_features(i, s).astype(np.float32) for i, s in enumerate(shapes)]
+    fb = [random_features(i + 10, s).astype(np.float32) for i, s in enumerate(shapes)]
+    ls = (5 * np.random.default_rng(20).uniform(size=(64, 48))).astype(np.float32)
+
+    map_jax = wd_jax.wasserstein_distortion(
+        jnp.array(fa[0]), jnp.array(fb[0]), jnp.array(ls), return_wd_map=(64, 48)
+    )
+    map_torch = wd_torch.wasserstein_distortion(
+        torch.from_numpy(fa[0][None]),
+        torch.from_numpy(fb[0][None]),
+        torch.from_numpy(ls[None, None]),
+        return_wd_map=(64, 48),
+    )
+    np.testing.assert_allclose(
+        map_torch[0].numpy(), np.asarray(map_jax), rtol=1e-4, atol=1e-6
+    )
+
+    map_jax = wd_jax.multi_wasserstein_distortion(
+        [jnp.array(f) for f in fa],
+        [jnp.array(f) for f in fb],
+        jnp.array(ls),
+        return_wd_map=(64, 48),
+    )
+    map_torch = wd_torch.multi_wasserstein_distortion(
+        [torch.from_numpy(f[None]) for f in fa],
+        [torch.from_numpy(f[None]) for f in fb],
+        torch.from_numpy(ls[None, None]),
+        return_wd_map=(64, 48),
+    )
+    np.testing.assert_allclose(
+        map_torch[0].numpy(), np.asarray(map_jax), rtol=1e-3, atol=1e-5
+    )

@@ -78,3 +78,13 @@ loss = multi_wasserstein_distortion(
 
 The JAX functions operate on a single image; use `jax.vmap` for batches. For a single
 feature array, use `wasserstein_distortion`.
+
+### Distortion maps
+To see where in the image the distortion arises, pass a spatial shape `(height, width)`
+as `return_wd_map` to `wasserstein_distortion`, `multi_wasserstein_distortion`,
+`vgg16_wasserstein_distortion` (JAX) or to the `forward` call of `WassersteinDistortion` /
+`VGG16WassersteinDistortion` (PyTorch), for example the shape of the image. Instead of a
+scalar, this returns a distortion map of that shape (in PyTorch, one map per example,
+i.e., a tensor of shape `(batch, height, width)`). The map aggregates the distortion
+across feature arrays, channels and multi-scale levels in the same way as the scalar
+value, but not across space, so its mean approximately equals the scalar value.
