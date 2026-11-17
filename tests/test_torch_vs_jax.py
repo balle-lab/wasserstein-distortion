@@ -55,7 +55,7 @@ def test_wasserstein_distortion_matches():
     loss_torch = wd_torch.wasserstein_distortion(
         torch.from_numpy(fa[None]), fb_torch, torch.from_numpy(ls[None, None])
     )
-    loss_torch.backward()
+    loss_torch.sum().backward()
 
     np.testing.assert_allclose(loss_torch.item(), loss_jax.item(), rtol=1e-5)
     assert fb_torch.grad is not None

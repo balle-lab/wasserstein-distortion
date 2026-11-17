@@ -81,7 +81,7 @@ def wasserstein_distortion(
     Returns
     -------
     Tensor
-        Scalar distortion value, averaged over the batch.
+        Distortion values of shape ``(batch,)``.
 
     Notes
     -----
@@ -130,13 +130,14 @@ def wasserstein_distortion(
         wd_maps.append(torch.square(ma - mb) + torch.square(sa - sb))
 
     # Accumulate the distortion per channel, so the channel weights can be applied once.
-    channel_dist = features_a.new_zeros(features_a.shape[-3])
+    batch = torch.broadcast_shapes(features_a.shape[:1], log2_sigma.shape[:1])[0]
+    channel_dist = features_a.new_zeros(batch, features_a.shape[-3])
     for i, wd_map in enumerate(wd_maps):
         level_weight = F.relu(1 - torch.abs(log2_sigma - i))
-        channel_dist += torch.mean(level_weight * wd_map, dim=(0, 2, 3))
+        channel_dist += torch.mean(level_weight * wd_map, dim=(2, 3))
         if i > 0:
             log2_sigma = helpers.lowpass(log2_sigma, stride=2)
-    return torch.mean(weight * channel_dist)
+    return torch.mean(weight * channel_dist, dim=1)
 
 
 def multi_wasserstein_distortion(
@@ -183,7 +184,7 @@ def multi_wasserstein_distortion(
     Returns
     -------
     Tensor
-        Scalar distortion value, averaged over the batch.
+        Distortion values of shape ``(batch,)``.
     """
     if len(features_a) != len(features_b):
         raise ValueError(
@@ -198,7 +199,7 @@ def multi_wasserstein_distortion(
             f"{len(weights)} and {len(features_a)}, respectively."
         )
 
-    dist = log2_sigma.new_zeros(())
+    dist = log2_sigma.new_zeros(log2_sigma.shape[0])
     for fa, fb, w in zip(features_a, features_b, weights):
         # Resize the sigma map to match the feature tensors.
         ls = F.interpolate(
@@ -280,7 +281,7 @@ class WassersteinDistortion(nn.Module):
         Returns
         -------
         Tensor
-            Scalar distortion value, averaged over the batch.
+            Distortion values of shape ``(batch,)``.
         """
         if image_a.shape != image_b.shape:
             raise ValueError(

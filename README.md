@@ -53,6 +53,7 @@ class MyFeatures(torch.nn.Module):
 
 loss_fn = WassersteinDistortion(MyFeatures())
 loss = loss_fn(image_a, image_b, log2_sigma)  # log2_sigma: (batch, 1, height, width)
+loss = loss.mean()  # The PyTorch functions return one value per example.
 ```
 
 If you already have feature tensors, call `multi_wasserstein_distortion` (or

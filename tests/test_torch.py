@@ -167,7 +167,7 @@ def test_wasserstein_distortion_behavior():
     log2_sigma = torch.zeros(1, 1, 32, 32)
 
     result = wasserstein.wasserstein_distortion(features_a, features_a, log2_sigma)
-    assert result.shape == ()
+    assert result.shape == (1,)
     assert result == 0.0
 
     result = wasserstein.wasserstein_distortion(features_a, 2 * features_a, log2_sigma)
@@ -191,7 +191,9 @@ def test_wasserstein_distortion_sigma_zero_is_mse():
     log2_sigma = torch.zeros(2, 1, 16, 16, dtype=torch.float64)
 
     result = wasserstein.wasserstein_distortion(features_a, features_b, log2_sigma)
-    torch.testing.assert_close(result, torch.mean(torch.square(features_a - features_b)))
+    torch.testing.assert_close(
+        result, torch.mean(torch.square(features_a - features_b), dim=(1, 2, 3))
+    )
 
 
 def test_wasserstein_distortion_is_symmetric():
@@ -206,8 +208,8 @@ def test_wasserstein_distortion_is_symmetric():
     torch.testing.assert_close(result_ab, result_ba)
 
 
-def test_wasserstein_distortion_batch_is_mean_over_examples():
-    """Verifies that a batched call equals the mean of per-example calls."""
+def test_wasserstein_distortion_batch_is_per_example():
+    """Verifies that a batched call returns the results of per-example calls."""
     generator = torch.Generator().manual_seed(0)
     features_a = torch.randn(3, 4, 16, 16, generator=generator, dtype=torch.float64)
     features_b = torch.randn(3, 4, 16, 16, generator=generator, dtype=torch.float64)
@@ -220,7 +222,8 @@ def test_wasserstein_distortion_batch_is_mean_over_examples():
         )
         for i in range(3)
     ]
-    torch.testing.assert_close(batched, torch.stack(individual).mean())
+    assert batched.shape == (3,)
+    torch.testing.assert_close(batched, torch.cat(individual))
 
 
 def test_wasserstein_distortion_gradients_are_finite():
@@ -229,7 +232,8 @@ def test_wasserstein_distortion_gradients_are_finite():
     features_b = torch.ones(1, 2, 16, 16, requires_grad=True)
     log2_sigma = torch.full((1, 1, 16, 16), 3.0)
 
-    wasserstein.wasserstein_distortion(features_a, features_b, log2_sigma).backward()
+    dist = wasserstein.wasserstein_distortion(features_a, features_b, log2_sigma)
+    dist.sum().backward()
     assert features_b.grad is not None
     assert torch.all(torch.isfinite(features_b.grad))
 
@@ -329,10 +333,12 @@ def test_wasserstein_distortion_channel_weight():
     result = wasserstein.wasserstein_distortion(
         features_a, features_b, log2_sigma, weight=weight
     )
-    torch.testing.assert_close(result, torch.mean(weight * channels))
+    torch.testing.assert_close(
+        result, torch.mean(weight[:, None] * channels, dim=0)
+    )
 
     unweighted = wasserstein.wasserstein_distortion(features_a, features_b, log2_sigma)
-    torch.testing.assert_close(unweighted, torch.mean(channels))
+    torch.testing.assert_close(unweighted, torch.mean(channels, dim=0))
     result = wasserstein.wasserstein_distortion(
         features_a, features_b, log2_sigma, weight=3.0
     )
@@ -503,7 +509,7 @@ def test_vgg16_wasserstein_distortion_can_be_called():
 
     dist = module(image_a, image_b, log2_sigma)
     assert dist > 0.0
-    dist.backward()
+    dist.sum().backward()
     assert image_b.grad is not None
     assert torch.all(torch.isfinite(image_b.grad))
 
