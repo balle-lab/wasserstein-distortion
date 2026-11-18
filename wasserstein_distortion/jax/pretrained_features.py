@@ -75,5 +75,5 @@ def compute_vgg16_features(image: ArrayLike, num_scales: int = 3) -> list[Array]
     for _ in range(num_scales):
         activations = vgg.apply(params, image.transpose((1, 2, 0))[None], train=False)
         features.extend(activations[l].squeeze(0).transpose((2, 0, 1)) for l in layers)
-        image = helpers.lowpass(image, 2)
+        image = helpers.lowpass(image, downsample=(0, 0))
     return features

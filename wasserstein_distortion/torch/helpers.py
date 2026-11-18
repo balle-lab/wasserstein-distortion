@@ -82,7 +82,46 @@ def _lowpass_kernel(device: torch.device, dtype: torch.dtype) -> Tensor:
         return torch.outer(kernel, kernel)[None, None]  # shape: (1, 1, 3, 3)
 
 
-def lowpass(inputs: Tensor, stride: int) -> Tensor:
+def subsampling_offset(step: int) -> tuple[int, int]:
+    """Returns the subsampling offset in height and width for a pyramid step.
+
+    The offset of each dimension alternates between 0 and 1 from step to step, so that
+    the shifts of the sample positions relative to block-centered sampling partially
+    cancel across pyramid levels.
+    """
+    return step % 2, (step + 1) % 2
+
+
+def _effective_offsets(
+    height: int, width: int, offset: tuple[int, int]
+) -> tuple[int, int]:
+    """Validates subsampling offsets, using offset 0 for dimensions of length one."""
+    if any(o not in (0, 1) for o in offset):
+        raise ValueError(f"`offset` must contain only 0 or 1, but received {offset}.")
+    return (offset[0] if height > 1 else 0, offset[1] if width > 1 else 0)
+
+
+def subsample(inputs: Tensor, offset: tuple[int, int] = (0, 0)) -> Tensor:
+    """Subsamples a tensor of shape ``(..., height, width)`` by a factor of two.
+
+    Parameters
+    ----------
+    inputs
+        The input tensor of shape ``(..., height, width)``.
+    offset
+        The index of the first retained element in height and width, each 0 or 1.
+        Dimensions of length one always use offset 0, so that they don't become empty.
+
+    Returns
+    -------
+    Tensor
+        ``inputs[..., offset[0]::2, offset[1]::2]``.
+    """
+    offset_h, offset_w = _effective_offsets(*inputs.shape[-2:], offset)
+    return inputs[..., offset_h::2, offset_w::2]
+
+
+def lowpass(inputs: Tensor, downsample: tuple[int, int] | None = None) -> Tensor:
     """Lowpass filters a tensor of shape ``(..., height, width)``.
 
     Parameters
@@ -90,20 +129,34 @@ def lowpass(inputs: Tensor, stride: int) -> Tensor:
     inputs
         The input tensor of shape ``(..., height, width)``. Each 2D slice is filtered
         separately.
-    stride
-        The stride length of the convolution. Typically either 1 or 2.
+    downsample
+        If ``None``, the output has the same shape as the input. Otherwise, the output
+        is downsampled by a factor of two, and this is the index of the input element on
+        which the first output element is centered, in height and width, each 0 or 1.
+        For example, ``(0, 0)`` is consistent with ``x[..., ::2, ::2]``. The result is
+        the same as ``subsample(lowpass(inputs), downsample)``, but cheaper to compute.
+        Dimensions of length one always use offset 0, so that they don't become empty.
 
     Returns
     -------
     Tensor
-        The lowpass filtered tensor of shape ``(..., height, width)``. Height and width
-        are the same as the input tensor if stride is 1.
+        The lowpass filtered tensor of shape ``(..., height, width)``, or of shape
+        ``(..., height', width')`` with about half the height and width if downsampling.
     """
     kernel = _lowpass_kernel(inputs.device, inputs.dtype)
-    # Pad symmetrically, which keeps the outputs centered on even pixels, consistent with
-    # `x[..., ::2, ::2]`.
     *batch, height, width = inputs.shape
-    outputs = F.conv2d(  # pylint: disable=not-callable
-        inputs.reshape(-1, 1, height, width), kernel, stride=stride, padding=1
-    )
+    inputs = inputs.reshape(-1, 1, height, width)
+    if downsample is None:
+        outputs = F.conv2d(inputs, kernel, padding=1)  # pylint: disable=not-callable
+    else:
+        offset_h, offset_w = _effective_offsets(height, width, downsample)
+        # Padding by one at the end, and also at the start for offset 0, centers the
+        # outputs on the input elements with the given offsets.
+        if (offset_h, offset_w) == (0, 0):
+            outputs = F.conv2d(  # pylint: disable=not-callable
+                inputs, kernel, stride=2, padding=1
+            )
+        else:
+            inputs = F.pad(inputs, (1 - offset_w, 1, 1 - offset_h, 1))
+            outputs = F.conv2d(inputs, kernel, stride=2)  # pylint: disable=not-callable
     return outputs.reshape(*batch, *outputs.shape[-2:])

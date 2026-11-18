@@ -34,12 +34,13 @@ def compute_multiscale_stats(
     stacked = torch.stack([features, torch.square(features)])
     means = []
     variances = []
-    for _ in range(num_levels):
-        filtered = helpers.lowpass(stacked, stride=1)
+    for i in range(num_levels):
+        filtered = helpers.lowpass(stacked)
         m, p = filtered.unbind()
         means.append(m)
         variances.append(p - torch.square(m))
-        stacked = filtered[..., ::2, ::2]
+        if i < num_levels - 1:
+            stacked = helpers.subsample(filtered, helpers.subsampling_offset(i))
     return means, variances
 
 
@@ -156,8 +157,11 @@ def wasserstein_distortion(
             channel_dist += F.interpolate(
                 level_weight * wd_map, size=return_wd_map, mode="bilinear", antialias=True
             )
-        if i > 0:
-            log2_sigma = helpers.lowpass(log2_sigma, stride=2)
+        if 0 < i < len(wd_maps) - 1:
+            # The statistics of the next level were subsampled in step `i - 1`.
+            log2_sigma = helpers.lowpass(
+                log2_sigma, downsample=helpers.subsampling_offset(i - 1)
+            )
     weight = weight.reshape(-1, *(1,) * len(spatial_shape))
     return torch.mean(weight * channel_dist, dim=1)
 

@@ -110,5 +110,5 @@ class VGG16Features(nn.Module):
             for block in self.blocks:
                 h = block(h)
                 features.append(h)
-            x = helpers.lowpass(x, stride=2)
+            x = helpers.lowpass(x, downsample=(0, 0))
         return features

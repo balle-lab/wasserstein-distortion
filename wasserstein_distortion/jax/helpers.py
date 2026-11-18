@@ -75,7 +75,46 @@ def safe_sqrt_jvp(limit, primals, tangents):
     return safe_sqrt(x, limit), sqrt_dot
 
 
-def lowpass(inputs: ArrayLike, stride: int) -> Array:
+def subsampling_offset(step: int) -> tuple[int, int]:
+    """Returns the subsampling offset in height and width for a pyramid step.
+
+    The offset of each dimension alternates between 0 and 1 from step to step, so that
+    the shifts of the sample positions relative to block-centered sampling partially
+    cancel across pyramid levels.
+    """
+    return step % 2, (step + 1) % 2
+
+
+def _effective_offsets(
+    height: int, width: int, offset: tuple[int, int]
+) -> tuple[int, int]:
+    """Validates subsampling offsets, using offset 0 for dimensions of length one."""
+    if any(o not in (0, 1) for o in offset):
+        raise ValueError(f"`offset` must contain only 0 or 1, but received {offset}.")
+    return (offset[0] if height > 1 else 0, offset[1] if width > 1 else 0)
+
+
+def subsample(inputs: Array, offset: tuple[int, int] = (0, 0)) -> Array:
+    """Subsamples an array of shape ``(..., height, width)`` by a factor of two.
+
+    Parameters
+    ----------
+    inputs
+        The input array of shape ``(..., height, width)``.
+    offset
+        The index of the first retained element in height and width, each 0 or 1.
+        Dimensions of length one always use offset 0, so that they don't become empty.
+
+    Returns
+    -------
+    Array
+        ``inputs[..., offset[0]::2, offset[1]::2]``.
+    """
+    offset_h, offset_w = _effective_offsets(*inputs.shape[-2:], offset)
+    return inputs[..., offset_h::2, offset_w::2]
+
+
+def lowpass(inputs: ArrayLike, downsample: tuple[int, int] | None = None) -> Array:
     """Lowpass filters an array of shape ``(..., height, width)``.
 
     Parameters
@@ -83,14 +122,19 @@ def lowpass(inputs: ArrayLike, stride: int) -> Array:
     inputs
         The input array of shape ``(..., height, width)``. Each 2D slice is filtered
         separately.
-    stride
-        The stride length of the convolution. Typically either 1 or 2.
+    downsample
+        If ``None``, the output has the same shape as the input. Otherwise, the output
+        is downsampled by a factor of two, and this is the index of the input element on
+        which the first output element is centered, in height and width, each 0 or 1.
+        For example, ``(0, 0)`` is consistent with ``x[..., ::2, ::2]``. The result is
+        the same as ``subsample(lowpass(inputs), downsample)``, but cheaper to compute.
+        Dimensions of length one always use offset 0, so that they don't become empty.
 
     Returns
     -------
     Array
-        The lowpass filtered array of shape ``(..., height, width)``. Height and width
-        are the same as the input array if stride is 1.
+        The lowpass filtered array of shape ``(..., height, width)``, or of shape
+        ``(..., height', width')`` with about half the height and width if downsampling.
     """
     inputs = jnp.asarray(inputs)
     # Lowpass filter. Weights sum to one so that the output dynamic range is the same as
@@ -98,14 +142,20 @@ def lowpass(inputs: ArrayLike, stride: int) -> Array:
     # accept that because a 3x3 filter is reasonably fast.
     kernel = jnp.array([0.25, 0.5, 0.25], dtype=inputs.dtype)
     kernel = jnp.outer(kernel, kernel)[None, None]  # shape: (1, 1, 3, 3)
-    # Pad symmetrically rather than using "same" padding. With stride 2 and even sizes,
-    # "same" padding pads only at the end, which centers the outputs on odd pixels. This
-    # keeps the outputs centered on even pixels, consistent with `x[..., ::2, ::2]`.
     *batch, height, width = inputs.shape
+    if downsample is None:
+        stride, offset_h, offset_w = 1, 0, 0
+    else:
+        stride = 2
+        offset_h, offset_w = _effective_offsets(height, width, downsample)
+    # Pad explicitly rather than using "same" padding, which with stride 2 and even sizes
+    # pads only at the end. Padding by one at the end, and also at the start for offset 0,
+    # centers the outputs on the input elements with the given offsets.
+    padding = ((1 - offset_h, 1), (1 - offset_w, 1))
     outputs = jax.lax.conv(
         inputs.reshape(-1, 1, height, width),
         kernel,
         window_strides=(stride, stride),
-        padding=((1, 1), (1, 1)),  # pyright: ignore[reportArgumentType]
+        padding=padding,  # pyright: ignore[reportArgumentType]
     )
     return outputs.reshape(*batch, *outputs.shape[-2:])

@@ -27,11 +27,11 @@ def test_lowpass_behavior():
 
     Checks
     ------
-    - The spatial resolution is halved when using stride=2.
+    - The spatial resolution is halved when downsampling.
     - The value range stays between 0 and 1, the same as the input.
     """
     noise = torch.rand(1, 1, 64, 64, generator=torch.Generator().manual_seed(0))
-    filtered = helpers.lowpass(noise, stride=2)
+    filtered = helpers.lowpass(noise, downsample=(0, 0))
     assert filtered.shape == (1, 1, 32, 32)
     assert torch.all(filtered >= 0) and torch.all(filtered <= 1)
 
@@ -46,26 +46,53 @@ def test_lowpass_preserves_leading_dims_and_dtype():
     - The dtype is preserved.
     """
     x = torch.randn(2, 3, 4, 16, 16, dtype=torch.float64)
-    filtered = helpers.lowpass(x, stride=1)
+    filtered = helpers.lowpass(x)
     assert filtered.shape == x.shape
     assert filtered.dtype == torch.float64
-    torch.testing.assert_close(filtered[1, 2], helpers.lowpass(x[1, 2], stride=1))
+    torch.testing.assert_close(filtered[1, 2], helpers.lowpass(x[1, 2]))
 
 
 def test_lowpass_preserves_constant_in_interior():
     """Verifies that the lowpass filter weights sum to one."""
     x = torch.full((1, 1, 16, 16), 3.0)
-    filtered = helpers.lowpass(x, stride=1)
+    filtered = helpers.lowpass(x)
     torch.testing.assert_close(filtered[..., 1:-1, 1:-1], x[..., 1:-1, 1:-1])
+
+
+@pytest.mark.parametrize("offset", [(0, 0), (0, 1), (1, 0), (1, 1)])
+@pytest.mark.parametrize("size", [(16, 16), (15, 17), (1, 4), (3, 1), (1, 1)])
+def test_lowpass_offset_equals_subsampled_lowpass(offset, size):
+    """Verifies that lowpass() subsamples correctly when downsampling.
+
+    Checks
+    ------
+    - The result equals the result without downsampling, subsampled with the same
+      offset.
+    - Dimensions of length one don't become empty.
+    """
+    x = torch.randn(2, *size, generator=torch.Generator().manual_seed(0))
+    filtered = helpers.lowpass(x, downsample=offset)
+    expected = helpers.subsample(helpers.lowpass(x), offset)
+    torch.testing.assert_close(filtered, expected)
+    assert filtered.numel() > 0
+
+
+def test_lowpass_offset_raises_for_invalid_arguments():
+    """Verifies that lowpass() and subsample() reject invalid offsets."""
+    x = torch.zeros(1, 8, 8)
+    with pytest.raises(ValueError):
+        helpers.lowpass(x, downsample=(2, 0))
+    with pytest.raises(ValueError):
+        helpers.subsample(x, offset=(0, -1))
 
 
 def test_lowpass_kernel_cached_in_inference_mode_supports_autograd():
     """Verifies that a kernel first cached in inference mode still works with autograd."""
     helpers._lowpass_kernel.cache_clear()  # pylint: disable=protected-access  # pyright: ignore[reportPrivateUsage]
     with torch.inference_mode():
-        helpers.lowpass(torch.ones(1, 8, 8), stride=1)
+        helpers.lowpass(torch.ones(1, 8, 8))
     x = torch.ones(1, 8, 8, requires_grad=True)
-    helpers.lowpass(x, stride=1).sum().backward()
+    helpers.lowpass(x).sum().backward()
     assert x.grad is not None
 
 

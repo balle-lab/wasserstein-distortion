@@ -31,13 +31,13 @@ def random_features(seed, shape):
     return np.random.default_rng(seed).normal(size=shape)
 
 
-@pytest.mark.parametrize("stride", [1, 2])
+@pytest.mark.parametrize("downsample", [None, (0, 0), (0, 1), (1, 0), (1, 1)])
 @pytest.mark.parametrize("size", [(16, 16), (15, 17)])
-def test_lowpass_matches(stride, size):
-    """Compares lowpass filters, including odd sizes."""
+def test_lowpass_matches(downsample, size):
+    """Compares lowpass filters, including odd sizes and downsampling offsets."""
     x = random_features(0, (3, *size)).astype(np.float32)
-    out_jax = wd_jax.lowpass(jnp.array(x), stride)
-    out_torch = wd_torch.lowpass(torch.from_numpy(x), stride)
+    out_jax = wd_jax.lowpass(jnp.array(x), downsample)
+    out_torch = wd_torch.lowpass(torch.from_numpy(x), downsample)
     np.testing.assert_allclose(out_torch.numpy(), np.asarray(out_jax), atol=1e-6)
 
 
