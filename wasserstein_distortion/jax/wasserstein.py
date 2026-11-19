@@ -99,8 +99,8 @@ def wasserstein_distortion(
         and width as the feature arrays.
     weight
         Scalar or vector of shape ``(channels,)``. If a vector, each element is applied to
-        the distortion in the corresponding feature channel. The distortion is the mean
-        of the weighted per-channel distortions.
+        the distortion in the corresponding feature channel. The distortion is the mean of
+        the weighted per-channel distortions.
     num_levels
         The number of multi-scale levels of the feature statistics to compute. Must be
         greater than or equal to the maximum of `log2_sigma`.
@@ -108,12 +108,12 @@ def wasserstein_distortion(
         Upper limit for the gradient of the square root applied to the empirical feature
         variance estimates, for numerical stability.
     return_wd_map
-        If ``None``, returns the scalar distortion value. If a spatial shape
-        ``(height, width)``, returns a distortion map of that shape instead, which
-        aggregates the distortion across channels and multi-scale levels in the same way
-        as the scalar value, but not across space. The distortion maps of all multi-scale
-        levels are resized to this shape before being summed. The mean of the map is
-        approximately equal to the scalar value.
+        If ``None``, returns the scalar distortion value. If a spatial shape ``(height,
+        width)``, returns a distortion map of that shape instead, which aggregates the
+        distortion across channels and multi-scale levels in the same way as the scalar
+        value, but not across space. The distortion maps of all multi-scale levels are
+        resized to this shape before being summed. The mean of the map is approximately
+        equal to the scalar value.
     return_intermediates
         If ``True``, returns intermediate computations in a dictionary, besides the
         distortion value.
@@ -127,17 +127,18 @@ def wasserstein_distortion(
 
     Notes
     -----
-    For an introduction to Wasserstein Distortion, refer to [1]_. For a description of
-    this implementation, refer to [2]_. Please cite these papers if you use this code for
-    scientific or research work.
+    This is a feature-agnostic implementation of the distortion loss used in [1]_. For the
+    specific version used in the paper, see `vgg16_wasserstein_distortion`. For a
+    theoretical introduction to Wasserstein Distortion, refer to [2]_. Please cite these
+    papers if you use this code for scientific or research work.
 
-    .. [1] Y. Qiu, A. B. Wagner, J. Ballé, L. Theis: "Wasserstein Distortion: Unifying
-       Fidelity and Realism," 2024 58th Ann. Conf. on Information Sciences and Systems
-       (CISS), 2024. https://arxiv.org/abs/2310.03629
-    .. [2] J. Ballé, L. Versari, E. Dupont, H. Kim, M. Bauer: "Good, Cheap,
+    .. [1] J. Ballé, L. Versari, E. Dupont, H. Kim, M. Bauer: "Good, Cheap,
        and Fast: Overfitted Image Compression with Wasserstein Distortion," 2025 IEEE/CVF
        Conf. on Computer Vision and Pattern Recognition (CVPR), 2025.
        https://arxiv.org/abs/2412.00505
+    .. [2] Y. Qiu, A. B. Wagner, J. Ballé, L. Theis: "Wasserstein Distortion: Unifying
+       Fidelity and Realism," 2024 58th Ann. Conf. on Information Sciences and Systems
+       (CISS), 2024. https://arxiv.org/abs/2310.03629
     """
     if features_a.shape != features_b.shape:
         raise ValueError(
@@ -286,13 +287,12 @@ def multi_wasserstein_distortion(
         Upper limit for the gradient of the square root applied to the empirical feature
         variance estimates, for numerical stability.
     return_wd_map
-        If ``None``, returns the scalar distortion value. If a spatial shape
-        ``(height, width)``, returns a distortion map of that shape instead, which
-        aggregates the distortion across feature arrays, channels and multi-scale levels
-        in the same way as the scalar value, but not across space (see
-        `wasserstein_distortion`). A natural choice is the shape of the largest feature
-        array, or of `log2_sigma`. The mean of the map is approximately equal to the
-        scalar value.
+        If ``None``, returns the scalar distortion value. If a spatial shape ``(height,
+        width)``, returns a distortion map of that shape instead, which aggregates the
+        distortion across feature arrays, channels and multi-scale levels in the same way
+        as the scalar value, but not across space (see `wasserstein_distortion`). A
+        natural choice is the shape of the largest feature array, or of `log2_sigma`. The
+        mean of the map is approximately equal to the scalar value.
     return_intermediates
         If ``True``, returns intermediate computations in a dictionary, besides the
         distortion value.
@@ -306,17 +306,18 @@ def multi_wasserstein_distortion(
 
     Notes
     -----
-    For an introduction to Wasserstein Distortion, refer to [1]_. For a description of
-    this implementation, refer to [2]_. Please cite these papers if you use this code for
-    scientific or research work.
+    This is a feature-agnostic implementation of the distortion loss used in [1]_. For the
+    specific version used in the paper, see `vgg16_wasserstein_distortion`. For a
+    theoretical introduction to Wasserstein Distortion, refer to [2]_. Please cite these
+    papers if you use this code for scientific or research work.
 
-    .. [1] Y. Qiu, A. B. Wagner, J. Ballé, L. Theis: "Wasserstein Distortion: Unifying
-       Fidelity and Realism," 2024 58th Ann. Conf. on Information Sciences and Systems
-       (CISS), 2024. https://arxiv.org/abs/2310.03629
-    .. [2] J. Ballé, L. Versari, E. Dupont, H. Kim, M. Bauer: "Good, Cheap,
+    .. [1] J. Ballé, L. Versari, E. Dupont, H. Kim, M. Bauer: "Good, Cheap,
        and Fast: Overfitted Image Compression with Wasserstein Distortion," 2025 IEEE/CVF
        Conf. on Computer Vision and Pattern Recognition (CVPR), 2025.
        https://arxiv.org/abs/2412.00505
+    .. [2] Y. Qiu, A. B. Wagner, J. Ballé, L. Theis: "Wasserstein Distortion: Unifying
+       Fidelity and Realism," 2024 58th Ann. Conf. on Information Sciences and Systems
+       (CISS), 2024. https://arxiv.org/abs/2310.03629
     """
     if len(features_a) != len(features_b):
         raise ValueError(
@@ -411,11 +412,11 @@ def vgg16_wasserstein_distortion(
         Upper limit for the gradient of the square root applied to the empirical feature
         variance estimates, for numerical stability.
     return_wd_map
-        If ``None``, returns the scalar distortion value. If a spatial shape
-        ``(height, width)``, returns a distortion map of that shape instead, which
-        aggregates the distortion in the same way as the scalar value, but not across
-        space (see `multi_wasserstein_distortion`). A natural choice is the shape of the
-        images. The mean of the map is approximately equal to the scalar value.
+        If ``None``, returns the scalar distortion value. If a spatial shape ``(height,
+        width)``, returns a distortion map of that shape instead, which aggregates the
+        distortion in the same way as the scalar value, but not across space (see
+        `multi_wasserstein_distortion`). A natural choice is the shape of the images. The
+        mean of the map is approximately equal to the scalar value.
 
     Returns
     -------
@@ -424,13 +425,17 @@ def vgg16_wasserstein_distortion(
 
     Notes
     -----
-    This is the distortion loss function used in [1]_. Please cite the paper if you use
-    this code for scientific or research work.
+    This is the distortion loss function used in [1]_. For a theoretical introduction to
+    Wasserstein Distortion, refer to [2]_. Please cite these papers if you use this code
+    for scientific or research work.
 
     .. [1] J. Ballé, L. Versari, E. Dupont, H. Kim, M. Bauer: "Good, Cheap,
        and Fast: Overfitted Image Compression with Wasserstein Distortion," 2025 IEEE/CVF
        Conf. on Computer Vision and Pattern Recognition (CVPR), 2025.
        https://arxiv.org/abs/2412.00505
+    .. [2] Y. Qiu, A. B. Wagner, J. Ballé, L. Theis: "Wasserstein Distortion: Unifying
+       Fidelity and Realism," 2024 58th Ann. Conf. on Information Sciences and Systems
+       (CISS), 2024. https://arxiv.org/abs/2310.03629
     """
     features_a = pretrained_features.compute_vgg16_features(
         image_a, num_scales=num_scales
@@ -494,8 +499,8 @@ def discrete_wasserstein_distortion(
 
     Notes
     -----
-    For an introduction to Wasserstein Distortion, refer to [1]_. Please cite this paper
-    if you use this code for scientific or research work.
+    This is a Gaussianized version of the distortion loss function described in [1]_.
+    Please cite this paper if you use this code for scientific or research work.
 
     .. [1] Y. Qiu, A. B. Wagner, J. Ballé, L. Theis: "Wasserstein Distortion: Unifying
        Fidelity and Realism," 2024 58th Ann. Conf. on Information Sciences and Systems

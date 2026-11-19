@@ -1,17 +1,27 @@
 # Wasserstein Distortion
-This is an implementation of VGG-16 Wasserstein Distortion in JAX and PyTorch.
+This is an implementation of Wasserstein Distortion in JAX and PyTorch.
 
-Wasserstein Distortion was introduced in:
+For a description of VGG-16 Wasserstein Distortion, refer to:
+
+> J. Ballé, L. Versari, E. Dupont, H. Kim, M. Bauer: "Good, Cheap, and Fast: Overfitted
+> Image Compression with Wasserstein Distortion," 2025 IEEE/CVF Conf. on Computer Vision
+> and Pattern Recognition (CVPR), 2025. https://arxiv.org/abs/2412.00505
+
+`vgg16_wasserstein_distortion` (JAX) and `VGG16WassersteinDistortion` (PyTorch) have
+implementations of the distortion loss used in that paper. There are also feature-agnostic
+implementations of the same loss, allowing you to plug in an alternative feature extractor
+other than VGG-16 (see below). The functions in this package are also able to return
+distortion maps, visualizing the spatial distribution of distortions (see further below).
+
+Wasserstein Distortion was introduced as a theoretical concept in:
 
 > Y. Qiu, A. B. Wagner, J. Ballé, L. Theis: "Wasserstein Distortion: Unifying Fidelity and
 > Realism," 2024 58th Ann. Conf. on Information Sciences and Systems (CISS), 2024.
 > https://arxiv.org/abs/2310.03629
 
-For a description of this implementation, refer to:
-
-> J. Ballé, L. Versari, E. Dupont, H. Kim, M. Bauer: "Good, Cheap, and Fast: Overfitted
-> Image Compression with Wasserstein Distortion," 2025 IEEE/CVF Conf. on Computer Vision
-> and Pattern Recognition (CVPR), 2025. https://arxiv.org/abs/2412.00505
+`discrete_wasserstein_distortion` (JAX only) has an implementation of the distance defined
+in this paper. This implementation assumes Gaussianity and reduces the computation to a
+comparison of local means and standard deviations.
 
 Please cite these papers if you use this code for scientific work.
 
@@ -36,13 +46,13 @@ from wasserstein_distortion.jax import vgg16_wasserstein_distortion  # JAX
 from wasserstein_distortion.torch import VGG16WassersteinDistortion  # PyTorch
 ```
 
-Only the framework you import needs to be installed. See
-`example_torch.ipynb` or `example_jax.ipynb` for a complete example.
+Only the framework you import needs to be installed. See `example_torch.ipynb` or
+`example_jax.ipynb` for a complete example.
 
 ### Custom features (PyTorch)
 `VGG16WassersteinDistortion` is a `WassersteinDistortion` with VGG-16 features plugged in.
-To use other features, pass any module that maps an image to a list of feature tensors
-of shape `(batch, channels, height, width)`:
+To use other features, pass any module that maps an image to a list of feature tensors of
+shape `(batch, channels, height, width)`:
 
 ```python
 from wasserstein_distortion.torch import WassersteinDistortion
@@ -61,8 +71,8 @@ If you already have feature tensors, call `multi_wasserstein_distortion` (or
 
 ### Custom features (JAX)
 `vgg16_wasserstein_distortion` computes VGG-16 features and passes them to
-`multi_wasserstein_distortion`. To use other features, compute them yourself as a list
-of arrays of shape `(channels, height, width)` and call `multi_wasserstein_distortion`
+`multi_wasserstein_distortion`. To use other features, compute them yourself as a list of
+arrays of shape `(channels, height, width)` and call `multi_wasserstein_distortion`
 directly:
 
 ```python
@@ -80,8 +90,8 @@ The JAX functions operate on a single image; use `jax.vmap` for batches. For a s
 feature array, use `wasserstein_distortion`.
 
 ### Distortion maps
-To see where in the image the distortion arises, pass a spatial shape `(height, width)`
-as `return_wd_map` to `wasserstein_distortion`, `multi_wasserstein_distortion`,
+To see where in the image the distortion arises, pass a spatial shape `(height, width)` as
+`return_wd_map` to `wasserstein_distortion`, `multi_wasserstein_distortion`,
 `vgg16_wasserstein_distortion` (JAX) or to the `forward` call of `WassersteinDistortion` /
 `VGG16WassersteinDistortion` (PyTorch), for example the shape of the image. Instead of a
 scalar, this returns a distortion map of that shape (in PyTorch, one map per example,

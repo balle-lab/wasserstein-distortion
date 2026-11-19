@@ -15,6 +15,7 @@
 from .helpers import lowpass
 from .pretrained_features import load_vgg16_model
 from .pretrained_features import compute_vgg16_features
+from .wasserstein import discrete_wasserstein_distortion
 from .wasserstein import multi_wasserstein_distortion
 from .wasserstein import wasserstein_distortion
 from .wasserstein import vgg16_wasserstein_distortion

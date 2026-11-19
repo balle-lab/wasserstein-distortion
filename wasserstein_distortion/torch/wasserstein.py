@@ -70,8 +70,8 @@ def wasserstein_distortion(
         same height and width as the feature tensors.
     weight
         Scalar or vector of shape ``(channels,)``. If a vector, each element is applied to
-        the distortion in the corresponding feature channel. The distortion is the mean
-        of the weighted per-channel distortions.
+        the distortion in the corresponding feature channel. The distortion is the mean of
+        the weighted per-channel distortions.
     num_levels
         The number of multi-scale levels of the feature statistics to compute. Must be
         greater than or equal to the maximum of `log2_sigma` (not checked, to avoid a
@@ -81,32 +81,33 @@ def wasserstein_distortion(
         variance estimates, for numerical stability.
     return_wd_map
         If ``None``, returns one distortion value per example, of shape ``(batch,)``. If a
-        spatial shape ``(height, width)``, returns distortion maps of shape
-        ``(batch, height, width)`` instead, which aggregate the distortion across channels
-        and multi-scale levels in the same way as the distortion values, but not across
-        space. The distortion maps of all multi-scale levels are resized to the given
-        shape before being summed. The spatial mean of each map approximately equals the
+        spatial shape ``(height, width)``, returns distortion maps of shape ``(batch,
+        height, width)`` instead, which aggregate the distortion across channels and
+        multi-scale levels in the same way as the distortion values, but not across space.
+        The distortion maps of all multi-scale levels are resized to the given shape
+        before being summed. The spatial mean of each map approximately equals the
         corresponding distortion value. Averaging across the batch is left to the caller.
 
     Returns
     -------
     Tensor
-        Distortion values of shape ``(batch,)``, or distortion maps of shape
-        ``(batch, height, width)`` (if `return_wd_map` is a shape).
+        Distortion values of shape ``(batch,)``, or distortion maps of shape ``(batch,
+        height, width)`` (if `return_wd_map` is a shape).
 
     Notes
     -----
-    For an introduction to Wasserstein Distortion, refer to [1]_. For a description of
-    this implementation, refer to [2]_. Please cite these papers if you use this code for
-    scientific or research work.
+    This is a feature-agnostic implementation of the distortion loss used in [1]_. For the
+    specific version used in the paper, see `VGG16WassersteinDistortion`. For a
+    theoretical introduction to Wasserstein Distortion, refer to [2]_. Please cite these
+    papers if you use this code for scientific or research work.
 
-    .. [1] Y. Qiu, A. B. Wagner, J. Ballé, L. Theis: "Wasserstein Distortion: Unifying
-       Fidelity and Realism," 2024 58th Ann. Conf. on Information Sciences and Systems
-       (CISS), 2024. https://arxiv.org/abs/2310.03629
-    .. [2] J. Ballé, L. Versari, E. Dupont, H. Kim, M. Bauer: "Good, Cheap,
+    .. [1] J. Ballé, L. Versari, E. Dupont, H. Kim, M. Bauer: "Good, Cheap,
        and Fast: Overfitted Image Compression with Wasserstein Distortion," 2025 IEEE/CVF
        Conf. on Computer Vision and Pattern Recognition (CVPR), 2025.
        https://arxiv.org/abs/2412.00505
+    .. [2] Y. Qiu, A. B. Wagner, J. Ballé, L. Theis: "Wasserstein Distortion: Unifying
+       Fidelity and Realism," 2024 58th Ann. Conf. on Information Sciences and Systems
+       (CISS), 2024. https://arxiv.org/abs/2310.03629
     """
     if features_a.shape != features_b.shape:
         raise ValueError(
@@ -193,8 +194,8 @@ def multi_wasserstein_distortion(
         corresponding to the second image to be compared.
     log2_sigma
         Tensor of shape ``(batch, 1, height, width)``. The base two logarithm of the sigma
-        map, which indicates the amount of summarization in each location. Doesn't have
-        to have the same shape as the feature tensors.
+        map, which indicates the amount of summarization in each location. Doesn't have to
+        have the same shape as the feature tensors.
     weights
         One weight per feature tensor, used to form the weighted sum of the distortion
         values across feature tensors. Each weight can be a scalar, or a vector of shape
@@ -209,19 +210,34 @@ def multi_wasserstein_distortion(
         variance estimates, for numerical stability.
     return_wd_map
         If ``None``, returns one distortion value per example, of shape ``(batch,)``. If a
-        spatial shape ``(height, width)``, returns distortion maps of shape
-        ``(batch, height, width)`` instead, which aggregate the distortion across feature
-        tensors, channels and multi-scale levels in the same way as the distortion values,
-        but not across space (see `wasserstein_distortion`). A natural choice is the shape
-        of the largest feature tensor, or of `log2_sigma`. The spatial mean of each map
+        spatial shape ``(height, width)``, returns distortion maps of shape ``(batch,
+        height, width)`` instead, which aggregate the distortion across feature tensors,
+        channels and multi-scale levels in the same way as the distortion values, but not
+        across space (see `wasserstein_distortion`). A natural choice is the shape of the
+        largest feature tensor, or of `log2_sigma`. The spatial mean of each map
         approximately equals the corresponding distortion value. Averaging across the
         batch is left to the caller.
 
     Returns
     -------
     Tensor
-        Distortion values of shape ``(batch,)``, or distortion maps of shape
-        ``(batch, height, width)`` (if `return_wd_map` is a shape).
+        Distortion values of shape ``(batch,)``, or distortion maps of shape ``(batch,
+        height, width)`` (if `return_wd_map` is a shape).
+
+    Notes
+    -----
+    This is a feature-agnostic implementation of the distortion loss used in [1]_. For the
+    specific version used in the paper, see `VGG16WassersteinDistortion`. For a
+    theoretical introduction to Wasserstein Distortion, refer to [2]_. Please cite these
+    papers if you use this code for scientific or research work.
+
+    .. [1] J. Ballé, L. Versari, E. Dupont, H. Kim, M. Bauer: "Good, Cheap,
+       and Fast: Overfitted Image Compression with Wasserstein Distortion," 2025 IEEE/CVF
+       Conf. on Computer Vision and Pattern Recognition (CVPR), 2025.
+       https://arxiv.org/abs/2412.00505
+    .. [2] Y. Qiu, A. B. Wagner, J. Ballé, L. Theis: "Wasserstein Distortion: Unifying
+       Fidelity and Realism," 2024 58th Ann. Conf. on Information Sciences and Systems
+       (CISS), 2024. https://arxiv.org/abs/2310.03629
     """
     if len(features_a) != len(features_b):
         raise ValueError(
@@ -268,6 +284,21 @@ class WassersteinDistortion(nn.Module):
 
     The feature extractor can be any callable (typically an `nn.Module`) mapping an image
     tensor to a sequence of feature tensors of shape ``(batch, channels, height, width)``.
+
+    Notes
+    -----
+    This is a feature-agnostic implementation of the distortion loss used in [1]_. For the
+    specific version used in the paper, see `VGG16WassersteinDistortion`. For a
+    theoretical introduction to Wasserstein Distortion, refer to [2]_. Please cite these
+    papers if you use this code for scientific or research work.
+
+    .. [1] J. Ballé, L. Versari, E. Dupont, H. Kim, M. Bauer: "Good, Cheap,
+       and Fast: Overfitted Image Compression with Wasserstein Distortion," 2025 IEEE/CVF
+       Conf. on Computer Vision and Pattern Recognition (CVPR), 2025.
+       https://arxiv.org/abs/2412.00505
+    .. [2] Y. Qiu, A. B. Wagner, J. Ballé, L. Theis: "Wasserstein Distortion: Unifying
+       Fidelity and Realism," 2024 58th Ann. Conf. on Information Sciences and Systems
+       (CISS), 2024. https://arxiv.org/abs/2310.03629
     """
 
     def __init__(
@@ -362,13 +393,17 @@ class VGG16WassersteinDistortion(WassersteinDistortion):
 
     Notes
     -----
-    This is the distortion loss function used in [1]_. Please cite the paper if you use
-    this code for scientific or research work.
+    This is the distortion loss function used in [1]_. For a theoretical introduction to
+    Wasserstein Distortion, refer to [2]_. Please cite these papers if you use this code
+    for scientific or research work.
 
     .. [1] J. Ballé, L. Versari, E. Dupont, H. Kim, M. Bauer: "Good, Cheap,
        and Fast: Overfitted Image Compression with Wasserstein Distortion," 2025 IEEE/CVF
        Conf. on Computer Vision and Pattern Recognition (CVPR), 2025.
        https://arxiv.org/abs/2412.00505
+    .. [2] Y. Qiu, A. B. Wagner, J. Ballé, L. Theis: "Wasserstein Distortion: Unifying
+       Fidelity and Realism," 2024 58th Ann. Conf. on Information Sciences and Systems
+       (CISS), 2024. https://arxiv.org/abs/2310.03629
     """
 
     def __init__(
