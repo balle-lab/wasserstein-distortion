@@ -239,12 +239,11 @@ def wasserstein_distortion(
     # Weight the p-th powers of the distances for each level. The maps contain squared
     # distances, so raising them to the power p/2 yields the p-th power of the distances.
     level_dists = []
-    intermediates = collections.defaultdict(list)
-    intermediates.update(wd_maps=wd_maps)
+    intermediates: dict[str, Any] = dict(wd_maps=wd_maps, level_weights=[])
     for i, wd_map in enumerate(wd_maps):
         assert wd_map.shape[-2:] == log2_sigma.shape
         level_weight = jax.nn.relu(1 - abs(log2_sigma - i))
-        intermediates["weights"].append(level_weight)
+        intermediates["level_weights"].append(level_weight)
         level_dists.append(
             level_weight * helpers.safe_pow(wd_map, norm_spatial / 2, sqrt_grad_limit)
         )
@@ -260,6 +259,7 @@ def wasserstein_distortion(
     if return_wd_map is None:
         channel_dist = sum(jnp.mean(d, axis=(-2, -1)) for d in level_dists)
         channel_dist = helpers.safe_pow(channel_dist, exponent, sqrt_grad_limit)  # pyright: ignore[reportArgumentType]
+        intermediates["channel_dist"] = channel_dist
         dist = jnp.mean(weight * channel_dist)
     else:
         shape = (features_a.shape[-3], *return_wd_map)
@@ -423,7 +423,7 @@ def multi_wasserstein_distortion(
         raise ValueError(f"Must have max(log2_sigma) <= {num_levels}.")
 
     dist = jnp.zeros(() if return_wd_map is None else return_wd_map)
-    intermediates = collections.defaultdict(list)
+    intermediates: dict[str, list] = collections.defaultdict(list)
     for fa, fb, w in zip(features_a, features_b, weights):
         if fa.shape != fb.shape:
             raise ValueError(
@@ -445,7 +445,7 @@ def multi_wasserstein_distortion(
         log_ratio_w = math.log2(log2_sigma.shape[-1] / fa.shape[-1])
         mean_log_ratio = (log_ratio_h + log_ratio_w) / 2
         ls = jax.nn.relu(ls - mean_log_ratio)
-        d, s = wasserstein_distortion(
+        f_dist, f_ints = wasserstein_distortion(
             fa,
             fb,
             ls,
@@ -457,9 +457,9 @@ def multi_wasserstein_distortion(
             return_wd_map=return_wd_map,
             return_intermediates=True,
         )
-        dist += d
-        for i in s:
-            intermediates[i].append(s[i])
+        dist += f_dist
+        for k, i in f_ints.items():
+            intermediates[k].append(i)
 
     if return_intermediates:
         return dist, intermediates
