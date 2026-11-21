@@ -206,6 +206,101 @@ def test_wasserstein_distortion_sigma_zero_is_mse():
     assert jnp.allclose(result, jnp.mean(jnp.square(features_a - features_b)))
 
 
+NORMS = [(2.0, 2.0), (1.0, 1.0), (1.0, 2.0), (2.0, 1.0), (3.0, 1.5)]
+
+
+@pytest.mark.parametrize("norm_spatial, norm_channels", NORMS)
+def test_wasserstein_distortion_sigma_zero_composite_norm(norm_spatial, norm_channels):
+    """Verifies the composite norm against a direct computation with zero sigma."""
+    key_a, key_b = jax.random.split(jax.random.key(0))
+    features_a = jax.random.normal(key_a, (4, 16, 16))
+    features_b = jax.random.normal(key_b, (4, 16, 16))
+    weight = jnp.array([1.0, 3.0, 0.5, 2.0])
+
+    result = wasserstein.wasserstein_distortion(
+        features_a,
+        features_b,
+        jnp.zeros((16, 16)),
+        weight=weight,
+        norm_spatial=norm_spatial,
+        norm_channels=norm_channels,
+    )
+    diff = jnp.abs(features_a - features_b)
+    spatial = jnp.mean(diff**norm_spatial, axis=(-2, -1)) ** (1 / norm_spatial)
+    expected = jnp.mean(weight * spatial**norm_channels)
+    assert jnp.allclose(result, expected, rtol=1e-5)
+
+
+@pytest.mark.parametrize("norm_spatial, norm_channels", NORMS)
+def test_wasserstein_distortion_composite_norm_map_and_gradients(
+    norm_spatial, norm_channels
+):
+    """Verifies distortion maps and gradients for composite norms.
+
+    Checks
+    ------
+    - The mean of the distortion map approximately equals the scalar distortion.
+    - The map is zero for identical features.
+    - Gradients are finite, also for identical and constant features.
+    """
+    key_a, key_b, key_s = jax.random.split(jax.random.key(0), 3)
+    features_a = jax.random.normal(key_a, (4, 32, 32))
+    features_b = jax.random.normal(key_b, (4, 32, 32))
+    log2_sigma = 5 * jax.random.uniform(key_s, (32, 32))
+    kwargs = dict(
+        weight=jnp.array([1.0, 3.0, 0.5, 2.0]),
+        norm_spatial=norm_spatial,
+        norm_channels=norm_channels,
+    )
+
+    dist = wasserstein.wasserstein_distortion(
+        features_a, features_b, log2_sigma, **kwargs
+    )
+    wd_map = wasserstein.wasserstein_distortion(
+        features_a, features_b, log2_sigma, return_wd_map=(32, 32), **kwargs
+    )
+    assert jnp.allclose(jnp.mean(wd_map), dist, rtol=1e-3)
+    wd_map = wasserstein.wasserstein_distortion(
+        features_a, features_a, log2_sigma, return_wd_map=(32, 32), **kwargs
+    )
+    assert jnp.allclose(wd_map, 0.0)
+
+    for fa, fb in [(features_a, features_b), (features_a, features_a)]:
+        for return_wd_map in [None, (32, 32)]:
+            grad = jax.grad(
+                lambda fb, fa=fa, r=return_wd_map: jnp.mean(
+                    wasserstein.wasserstein_distortion(
+                        fa, fb, log2_sigma, return_wd_map=r, **kwargs
+                    )
+                )
+            )(fb)
+            assert jnp.all(jnp.isfinite(grad))
+    features = jnp.ones((2, 16, 16))
+    grad = jax.grad(wasserstein.wasserstein_distortion, argnums=1)(
+        features,
+        features,
+        jnp.full((16, 16), 3.0),
+        norm_spatial=norm_spatial,
+        norm_channels=norm_channels,
+    )
+    assert jnp.all(jnp.isfinite(grad))
+
+
+@pytest.mark.parametrize("norm", [0.0, -1.0, float("inf"), float("nan")])
+def test_wasserstein_distortion_invalid_norm_raises(norm):
+    """Verifies that invalid norm exponents are rejected."""
+    features = jnp.ones((2, 16, 16))
+    log2_sigma = jnp.zeros((16, 16))
+    with pytest.raises(ValueError):
+        wasserstein.wasserstein_distortion(
+            features, features, log2_sigma, norm_spatial=norm
+        )
+    with pytest.raises(ValueError):
+        wasserstein.wasserstein_distortion(
+            features, features, log2_sigma, norm_channels=norm
+        )
+
+
 def test_wasserstein_distortion_is_symmetric():
     """Verifies that swapping the two feature arrays doesn't change the distortion."""
     key_a, key_b, key_s = jax.random.split(jax.random.key(0), 3)
@@ -468,6 +563,76 @@ def test_num_levels_handling():
         )
 
 
+def test_num_levels_check_under_jit():
+    """Verifies that the num_levels check runs at trace time under JIT.
+
+    Checks
+    ------
+    - With a concrete `log2_sigma` captured in a jitted function, the check runs while
+      tracing and raises, without a tracer conversion error.
+    - With a traced `log2_sigma`, the check is skipped and the function compiles.
+    - The compiled code contains no reduction for the check.
+    """
+    features = jnp.ones((1, 32, 32))
+    log2_sigma = jnp.full((32, 32), 3.0)
+
+    with pytest.raises(ValueError, match="max"):
+        jax.jit(
+            lambda f: wasserstein.wasserstein_distortion(f, f, log2_sigma, num_levels=2)
+        )(features)
+    jax.jit(
+        lambda f: wasserstein.wasserstein_distortion(f, f, log2_sigma, num_levels=3)
+    )(features)
+
+    def fn(f, ls):
+        return wasserstein.wasserstein_distortion(f, f, ls, num_levels=3)
+
+    assert jnp.isclose(jax.jit(fn)(features, log2_sigma), 0.0)
+    jaxpr_traced = str(jax.make_jaxpr(fn)(features, log2_sigma))
+    jaxpr_closed = str(jax.make_jaxpr(lambda f: fn(f, log2_sigma))(features))
+    assert "reduce_max" not in jaxpr_traced
+    assert "reduce_max" not in jaxpr_closed
+
+
+def test_multi_wasserstein_distortion_num_levels_check():
+    """Verifies the num_levels check of multi_wasserstein_distortion().
+
+    Checks
+    ------
+    - Feature arrays larger than the sigma map in either dimension are rejected.
+    - The maximum of the sigma map is checked, also with a concrete `log2_sigma`
+      captured under JIT, without adding a reduction to the compiled code.
+    - Smaller feature arrays, whose rescaled sigma is lower, are accepted (despite
+      rounding errors from resizing).
+    """
+    log2_sigma = jnp.full((32, 32), 3.0)
+    small = [jnp.ones((1, 16, 16))]  # Decreases sigma by one.
+
+    for shape in [(64, 64), (33, 32), (32, 33)]:
+        large = [jnp.ones((1, *shape))]
+        with pytest.raises(ValueError, match="larger"):
+            wasserstein.multi_wasserstein_distortion(large, large, log2_sigma)
+
+    with pytest.raises(ValueError, match="max"):
+        wasserstein.multi_wasserstein_distortion(small, small, log2_sigma, num_levels=2)
+
+    def fn(f):
+        return wasserstein.multi_wasserstein_distortion(f, f, log2_sigma, num_levels=2)
+
+    with pytest.raises(ValueError, match="max"):
+        jax.jit(fn)(small)
+
+    wasserstein.multi_wasserstein_distortion(small, small, log2_sigma, num_levels=3)
+    jaxpr = str(
+        jax.make_jaxpr(
+            lambda f: wasserstein.multi_wasserstein_distortion(
+                f, f, log2_sigma, num_levels=3
+            )
+        )(small)
+    )
+    assert "reduce_max" not in jaxpr
+
+
 def test_multi_wasserstein_sigma_scaling(monkeypatch):
     """Validates sigma map scaling for feature arrays with different resolutions.
 
@@ -519,6 +684,14 @@ def test_vgg16_features_shapes(num_scales):
             size = 64 // 2 ** (scale + layer)
             output = outputs[1 + scale * 5 + layer]
             assert output.shape == (channels[layer], size, size)
+
+
+@pytest.mark.parametrize("shape", [(32, 64), (64, 32), (128, 128)])
+def test_vgg16_wasserstein_distortion_rejects_sigma_shape_mismatch(shape):
+    """Verifies that the sigma map must have the same spatial shape as the images."""
+    image = jnp.zeros((3, 64, 64))
+    with pytest.raises(ValueError, match="same spatial shape"):
+        wasserstein.vgg16_wasserstein_distortion(image, image, jnp.zeros(shape))
 
 
 def test_vgg16_wasserstein_distortion_can_be_called():
@@ -675,8 +848,7 @@ def test_multi_wasserstein_distortion_wd_map():
     keys = jax.random.split(jax.random.key(0), 2 * len(shapes) + 1)
     features_a = [jax.random.normal(k, s) for k, s in zip(keys[0::2], shapes)]
     features_b = [jax.random.normal(k, s) for k, s in zip(keys[1::2], shapes)]
-    # The first feature array is larger than the sigma map, which increases sigma by one.
-    log2_sigma = 4 * jax.random.uniform(keys[-1], (32, 24))
+    log2_sigma = 5 * jax.random.uniform(keys[-1], (64, 48))
     weights = [20.0, 1.0, jnp.ones(16), 1.0]
 
     dist = wasserstein.multi_wasserstein_distortion(

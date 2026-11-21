@@ -25,6 +25,12 @@ Tensor = torch.Tensor
 FeatureExtractor = Callable[[Tensor], Sequence[Tensor]]
 
 
+def _check_norm(name: str, value: float) -> None:
+    """Raises if a norm exponent is not positive and finite."""
+    if not (math.isfinite(value) and value > 0):
+        raise ValueError(f"`{name}` must be positive and finite, but received {value}.")
+
+
 def compute_multiscale_stats(
     features: Tensor,
     num_levels: int,
@@ -49,6 +55,8 @@ def wasserstein_distortion(
     features_b: Tensor,
     log2_sigma: Tensor,
     *,
+    norm_spatial: float = 2.0,
+    norm_channels: float = 2.0,
     weight: float | Tensor = 1.0,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
@@ -68,25 +76,34 @@ def wasserstein_distortion(
         Tensor of shape ``(batch, 1, height, width)``. The base two logarithm of the sigma
         map, which indicates the amount of summarization in each location. Must have the
         same height and width as the feature tensors.
+    norm_spatial
+        The exponent :math:`p` of the :math:`L_p` norm taken over spatial locations. Must
+        be positive and finite. See Notes.
+    norm_channels
+        The exponent :math:`q` of the :math:`L_q` norm taken over channels. Must be
+        positive and finite. See Notes.
     weight
-        Scalar or vector of shape ``(channels,)``. If a vector, each element is applied to
-        the distortion in the corresponding feature channel. The distortion is the mean of
-        the weighted per-channel distortions.
+        Nonnegative scalar or vector of shape ``(channels,)``. If a vector, each element
+        is applied to the distortion in the corresponding feature channel. The distortion
+        is the mean of the weighted per-channel distortions.
     num_levels
         The number of multi-scale levels of the feature statistics to compute. Must be
         greater than or equal to the maximum of `log2_sigma` (not checked, to avoid a
         device synchronization).
     sqrt_grad_limit
-        Upper limit for the gradient of the square root applied to the empirical feature
-        variance estimates, for numerical stability.
+        Upper limit for the gradient magnitude of the square root applied to the empirical
+        feature variance estimates, and of fractional powers taken by the norms, for
+        numerical stability.
     return_wd_map
         If ``None``, returns one distortion value per example, of shape ``(batch,)``. If a
         spatial shape ``(height, width)``, returns distortion maps of shape ``(batch,
         height, width)`` instead, which aggregate the distortion across channels and
         multi-scale levels in the same way as the distortion values, but not across space.
         The distortion maps of all multi-scale levels are resized to the given shape
-        before being summed. The spatial mean of each map approximately equals the
-        corresponding distortion value. Averaging across the batch is left to the caller.
+        before being summed. Each channel contributes to the maps in proportion to the
+        local contributions to its spatial norm, such that the spatial mean of each map
+        approximately equals the corresponding distortion value. Averaging across the
+        batch is left to the caller.
 
     Returns
     -------
@@ -101,6 +118,20 @@ def wasserstein_distortion(
     theoretical introduction to Wasserstein Distortion, refer to [2]_. Please cite these
     papers if you use this code for scientific or research work.
 
+    Let :math:`d_c(x)` be the local Wasserstein distance in channel :math:`c` at location
+    :math:`x` (i.e., the square root of the corresponding entry of the multi-scale
+    distortion maps), and :math:`w_c` the channel weight. With :math:`p` = `norm_spatial`
+    and :math:`q` = `norm_channels`, the distortion of each example is
+
+    .. math:: \\operatorname{mean}_c \\, w_c \\left( \\operatorname{mean}_x \\, d_c(x)^p
+       \\right)^{q/p},
+
+    i.e., the :math:`q`-th power of a weighted, mean-normalized composite
+    :math:`L_q`/:math:`L_p` norm. Taking the power rather than the norm itself means the
+    defaults :math:`p = q = 2` yield the weighted mean of the squared distances. For
+    non-integer `log2_sigma`, :math:`d_c(x)^p` is linearly interpolated between adjacent
+    multi-scale levels.
+
     .. [1] J. Ballé, L. Versari, E. Dupont, H. Kim, M. Bauer: "Good, Cheap,
        and Fast: Overfitted Image Compression with Wasserstein Distortion," 2025 IEEE/CVF
        Conf. on Computer Vision and Pattern Recognition (CVPR), 2025.
@@ -109,6 +140,8 @@ def wasserstein_distortion(
        Fidelity and Realism," 2024 58th Ann. Conf. on Information Sciences and Systems
        (CISS), 2024. https://arxiv.org/abs/2310.03629
     """
+    _check_norm("norm_spatial", norm_spatial)
+    _check_norm("norm_channels", norm_channels)
     if features_a.shape != features_b.shape:
         raise ValueError(
             f"`features_a` and `features_b` must have same shape, but received "
@@ -146,25 +179,42 @@ def wasserstein_distortion(
         sb = helpers.safe_sqrt(vb, sqrt_grad_limit)
         wd_maps.append(torch.square(ma - mb) + torch.square(sa - sb))
 
-    # Accumulate the distortion per channel, so the channel weights can be applied once.
-    batch = torch.broadcast_shapes(features_a.shape[:1], log2_sigma.shape[:1])[0]
-    spatial_shape = () if return_wd_map is None else tuple(return_wd_map)
-    channel_dist = features_a.new_zeros(batch, features_a.shape[-3], *spatial_shape)
+    # Weight the p-th powers of the distances for each level. The maps contain squared
+    # distances, so raising them to the power p/2 yields the p-th power of the distances.
+    level_dists = []
     for i, wd_map in enumerate(wd_maps):
         level_weight = F.relu(1 - torch.abs(log2_sigma - i))
-        if return_wd_map is None:
-            channel_dist += torch.mean(level_weight * wd_map, dim=(2, 3))
-        else:
-            channel_dist += F.interpolate(
-                level_weight * wd_map, size=return_wd_map, mode="bilinear", antialias=True
-            )
+        level_dists.append(
+            level_weight * helpers.safe_pow(wd_map, norm_spatial / 2, sqrt_grad_limit)
+        )
         if 0 < i < len(wd_maps) - 1:
             # The statistics of the next level were subsampled in step `i - 1`.
             log2_sigma = helpers.lowpass(
                 log2_sigma, downsample=helpers.subsampling_offset(i - 1)
             )
-    weight = weight.reshape(-1, *(1,) * len(spatial_shape))
-    return torch.mean(weight * channel_dist, dim=1)
+
+    # Convert the p-th power of the spatial norm per channel to its q-th power, and
+    # apply the channel weights.
+    exponent = norm_channels / norm_spatial
+    if return_wd_map is None:
+        channel_dist = sum(torch.mean(d, dim=(2, 3)) for d in level_dists)
+        channel_dist = helpers.safe_pow(channel_dist, exponent, sqrt_grad_limit)  # pyright: ignore[reportArgumentType]
+        return torch.mean(weight * channel_dist, dim=1)
+    channel_map = sum(
+        F.interpolate(d, size=return_wd_map, mode="bilinear", antialias=True)
+        for d in level_dists
+    )
+    if exponent != 1:
+        # Scale each channel's map so that its mean is the q-th power of the spatial norm.
+        # Since q/p - 1 > -1, flooring the norm at sqrt(tiny) keeps the scale below
+        # 1/sqrt(tiny), which is finite. Where the norm is below the floor, the map is
+        # (nearly) zero anyway.
+        channel_dist = torch.mean(channel_map, dim=(2, 3))  # pyright: ignore[reportArgumentType]
+        floor = math.sqrt(torch.finfo(channel_dist.dtype).tiny)
+        weight = weight * helpers.safe_pow(
+            channel_dist.clamp(min=floor), exponent - 1, sqrt_grad_limit
+        )
+    return torch.mean(weight[..., None, None] * channel_map, dim=1)
 
 
 def multi_wasserstein_distortion(
@@ -172,6 +222,8 @@ def multi_wasserstein_distortion(
     features_b: Sequence[Tensor],
     log2_sigma: Tensor,
     *,
+    norm_spatial: float = 2.0,
+    norm_channels: float = 2.0,
     weights: Sequence[float | Tensor] | None = None,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
@@ -188,14 +240,25 @@ def multi_wasserstein_distortion(
     ----------
     features_a
         Multiple feature tensors of shape ``(batch, channels, height, width)``,
-        corresponding to the first image to be compared.
+        corresponding to the first image to be compared. No feature tensor may be larger
+        than the image in either spatial dimension.
     features_b
         Multiple feature tensors of shape ``(batch, channels, height, width)``,
-        corresponding to the second image to be compared.
+        corresponding to the second image to be compared. No feature tensor may be larger
+        than the image in either spatial dimension.
     log2_sigma
         Tensor of shape ``(batch, 1, height, width)``. The base two logarithm of the sigma
-        map, which indicates the amount of summarization in each location. Doesn't have to
-        have the same shape as the feature tensors.
+        map, which indicates the amount of summarization in each location, in units of
+        pixels of the image. It must have the height and width of the image the features
+        were computed on. It is resized to the shape of each feature tensor, and rescaled
+        to its resolution.
+    norm_spatial
+        The exponent of the :math:`L_p` norm taken over spatial locations (see
+        `wasserstein_distortion`).
+    norm_channels
+        The exponent of the :math:`L_p` norm taken over channels (see
+        `wasserstein_distortion`). The resulting distortion values are summed across
+        feature tensors.
     weights
         One weight per feature tensor, used to form the weighted sum of the distortion
         values across feature tensors. Each weight can be a scalar, or a vector of shape
@@ -206,8 +269,9 @@ def multi_wasserstein_distortion(
         The number of multi-scale levels of the feature statistics to compute. Must be
         greater than or equal to the maximum of `log2_sigma`.
     sqrt_grad_limit
-        Upper limit for the gradient of the square root applied to the empirical feature
-        variance estimates, for numerical stability.
+        Upper limit for the gradient magnitude of the square root applied to the empirical
+        feature variance estimates, and of fractional powers taken by the norms, for
+        numerical stability.
     return_wd_map
         If ``None``, returns one distortion value per example, of shape ``(batch,)``. If a
         spatial shape ``(height, width)``, returns distortion maps of shape ``(batch,
@@ -255,6 +319,12 @@ def multi_wasserstein_distortion(
     spatial_shape = () if return_wd_map is None else tuple(return_wd_map)
     dist = log2_sigma.new_zeros(log2_sigma.shape[0], *spatial_shape)
     for fa, fb, w in zip(features_a, features_b, weights):
+        if fa.shape[-2] > log2_sigma.shape[-2] or fa.shape[-1] > log2_sigma.shape[-1]:
+            raise ValueError(
+                f"Feature tensors must not be larger than `log2_sigma` in either spatial "
+                f"dimension, but received {tuple(fa.shape[-2:])} and "
+                f"{tuple(log2_sigma.shape[-2:])}."
+            )
         # Resize the sigma map to match the feature tensors.
         ls = F.interpolate(
             log2_sigma, size=fa.shape[-2:], mode="bilinear", antialias=True
@@ -271,6 +341,8 @@ def multi_wasserstein_distortion(
             fa,
             fb,
             ls,
+            norm_spatial=norm_spatial,
+            norm_channels=norm_channels,
             weight=w,
             num_levels=num_levels,
             sqrt_grad_limit=sqrt_grad_limit,
@@ -304,6 +376,9 @@ class WassersteinDistortion(nn.Module):
     def __init__(
         self,
         features: FeatureExtractor,
+        *,
+        norm_spatial: float = 2.0,
+        norm_channels: float = 2.0,
         weights: Sequence[float | Tensor] | None = None,
         num_levels: int = 5,
         sqrt_grad_limit: float = 1e6,
@@ -313,7 +388,14 @@ class WassersteinDistortion(nn.Module):
         Parameters
         ----------
         features
-            Feature extractor, mapping an image to a sequence of feature tensors.
+            Feature extractor, mapping an image to a sequence of feature tensors. No
+            feature tensor may be larger than the image in either spatial dimension.
+        norm_spatial
+            The exponent of the :math:`L_p` norm taken over spatial locations (see
+            `wasserstein_distortion`).
+        norm_channels
+            The exponent of the :math:`L_p` norm taken over channels (see
+            `wasserstein_distortion`).
         weights
             One weight per feature tensor returned by `features`, used to form the
             weighted sum of the distortion values across feature tensors. Each weight
@@ -324,14 +406,19 @@ class WassersteinDistortion(nn.Module):
             be greater than or equal to the maximum of the `log2_sigma` passed to
             `forward`.
         sqrt_grad_limit
-            Upper limit for the gradient of the square root applied to the empirical
-            feature variance estimates, for numerical stability.
+            Upper limit for the gradient magnitude of the square root applied to the
+            empirical feature variance estimates, and of fractional powers taken by the
+            norms, for numerical stability.
         """
         super().__init__()
+        _check_norm("norm_spatial", norm_spatial)
+        _check_norm("norm_channels", norm_channels)
         self.features = features
         self.weights = None if weights is None else tuple(weights)
         self.num_levels = num_levels
         self.sqrt_grad_limit = sqrt_grad_limit
+        self.norm_spatial = norm_spatial
+        self.norm_channels = norm_channels
 
     @override
     def forward(
@@ -352,8 +439,9 @@ class WassersteinDistortion(nn.Module):
             Second image to be compared, in the format expected by the feature extractor.
         log2_sigma
             Tensor of shape ``(batch, 1, height, width)``. The base two logarithm of the
-            sigma map, which indicates the amount of summarization in each location.
-            Doesn't have to have the same shape as the images.
+            sigma map, which indicates the amount of summarization in each location, in
+            units of pixels of the images. It must have the same height and width as
+            the images.
         return_wd_map
             If ``None``, returns one distortion value per example, of shape ``(batch,)``.
             If a spatial shape ``(height, width)``, returns distortion maps of shape
@@ -374,10 +462,18 @@ class WassersteinDistortion(nn.Module):
                 f"Images must have the same shape, but received {image_a.shape} and "
                 f"{image_b.shape}."
             )
+        if image_a.shape[-2:] != log2_sigma.shape[-2:]:
+            raise ValueError(
+                f"`log2_sigma` must have the same height and width as the images, but "
+                f"received {tuple(log2_sigma.shape[-2:])} and "
+                f"{tuple(image_a.shape[-2:])}, respectively."
+            )
         return multi_wasserstein_distortion(
             self.features(image_a),
             self.features(image_b),
             log2_sigma,
+            norm_spatial=self.norm_spatial,
+            norm_channels=self.norm_channels,
             weights=self.weights,
             num_levels=self.num_levels,
             sqrt_grad_limit=self.sqrt_grad_limit,
@@ -408,7 +504,10 @@ class VGG16WassersteinDistortion(WassersteinDistortion):
 
     def __init__(
         self,
+        *,
         num_scales: int = 3,
+        norm_spatial: float = 2.0,
+        norm_channels: float = 2.0,
         image_weight: float | Tensor = 20.0,
         num_levels: int = 5,
         sqrt_grad_limit: float = 1e6,
@@ -422,6 +521,12 @@ class VGG16WassersteinDistortion(WassersteinDistortion):
             The number of scales of the image the features should be computed on. The
             image will be downsampled ``num_scales - 1`` times and VGG features computed
             on the original image plus the downsampled versions.
+        norm_spatial
+            The exponent of the :math:`L_p` norm taken over spatial locations (see
+            `wasserstein_distortion`).
+        norm_channels
+            The exponent of the :math:`L_p` norm taken over channels (see
+            `wasserstein_distortion`).
         image_weight
             Weight of the distortion computed on the image itself (i.e., on pixels),
             relative to the VGG feature maps, which each have weight 1. Can be a scalar,
@@ -431,8 +536,9 @@ class VGG16WassersteinDistortion(WassersteinDistortion):
             be greater than or equal to the maximum of the `log2_sigma` passed to
             `forward`.
         sqrt_grad_limit
-            Upper limit for the gradient of the square root applied to the empirical
-            feature variance estimates, for numerical stability.
+            Upper limit for the gradient magnitude of the square root applied to the
+            empirical feature variance estimates, and of fractional powers taken by the
+            norms, for numerical stability.
         pretrained
             Whether to load pretrained ImageNet weights. If ``False``, the weights are
             randomly initialized, which is useful for unit testing.
@@ -443,6 +549,8 @@ class VGG16WassersteinDistortion(WassersteinDistortion):
         num_vgg_features = num_scales * len(features.layer_names)
         super().__init__(
             features,
+            norm_spatial=norm_spatial,
+            norm_channels=norm_channels,
             weights=[image_weight] + [1.0] * num_vgg_features,
             num_levels=num_levels,
             sqrt_grad_limit=sqrt_grad_limit,

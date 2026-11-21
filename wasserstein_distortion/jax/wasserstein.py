@@ -13,16 +13,36 @@
 """Implementation of Wasserstein Distortion in JAX."""
 
 import collections
+import math
 from collections.abc import Collection, Sequence
 from typing import overload, Any, Literal
 import jax
 from jax import numpy as jnp
 from jax.scipy import stats
+import numpy as np
 from . import helpers
 from . import pretrained_features
 
 Array = jax.Array
 ArrayLike = jax.typing.ArrayLike
+
+
+def _check_norm(name: str, value: float) -> None:
+    """Raises if a norm exponent is not positive and finite."""
+    if not (math.isfinite(value) and value > 0):
+        raise ValueError(f"`{name}` must be positive and finite, but received {value}.")
+
+
+def _concrete_max(x: Array) -> float | None:
+    """Returns the maximum of `x` computed on the host, or ``None`` if `x` is traced.
+
+    Uses NumPy rather than `jnp`, because under `jax.jit`, `jnp` operations are staged
+    into the compiled computation even when their inputs are concrete. This way, the check
+    runs at most once at trace time and doesn't add work to the compiled code.
+    """
+    if isinstance(x, jax.core.Tracer):
+        return None
+    return float(np.max(np.asarray(x)))
 
 
 def compute_multiscale_stats(
@@ -50,6 +70,8 @@ def wasserstein_distortion(
     features_b: Array,
     log2_sigma: Array,
     *,
+    norm_spatial: float = 2.0,
+    norm_channels: float = 2.0,
     weight: ArrayLike = 1.0,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
@@ -64,6 +86,8 @@ def wasserstein_distortion(
     features_b: Array,
     log2_sigma: Array,
     *,
+    norm_spatial: float = 2.0,
+    norm_channels: float = 2.0,
     weight: ArrayLike = 1.0,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
@@ -77,6 +101,8 @@ def wasserstein_distortion(
     features_b: Array,
     log2_sigma: Array,
     *,
+    norm_spatial: float = 2.0,
+    norm_channels: float = 2.0,
     weight: ArrayLike = 1.0,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
@@ -97,23 +123,31 @@ def wasserstein_distortion(
         Array of shape ``(height, width)``. The base two logarithm of the sigma map, which
         indicates the amount of summarization in each location. Must have the same height
         and width as the feature arrays.
+    norm_spatial
+        The exponent :math:`p` of the :math:`L_p` norm taken over spatial locations. Must
+        be positive and finite. See Notes.
+    norm_channels
+        The exponent :math:`q` of the :math:`L_q` norm taken over channels. Must be
+        positive and finite. See Notes.
     weight
-        Scalar or vector of shape ``(channels,)``. If a vector, each element is applied to
-        the distortion in the corresponding feature channel. The distortion is the mean of
-        the weighted per-channel distortions.
+        Nonnegative scalar or vector of shape ``(channels,)``. If a vector, each element
+        is applied to the distortion in the corresponding feature channel. The distortion
+        is the mean of the weighted per-channel distortions.
     num_levels
         The number of multi-scale levels of the feature statistics to compute. Must be
         greater than or equal to the maximum of `log2_sigma`.
     sqrt_grad_limit
-        Upper limit for the gradient of the square root applied to the empirical feature
-        variance estimates, for numerical stability.
+        Upper limit for the gradient magnitude of the square root applied to the empirical
+        feature variance estimates, and of fractional powers taken by the norms, for
+        numerical stability.
     return_wd_map
         If ``None``, returns the scalar distortion value. If a spatial shape ``(height,
         width)``, returns a distortion map of that shape instead, which aggregates the
         distortion across channels and multi-scale levels in the same way as the scalar
         value, but not across space. The distortion maps of all multi-scale levels are
-        resized to this shape before being summed. The mean of the map is approximately
-        equal to the scalar value.
+        resized to this shape before being summed. Each channel contributes to the map in
+        proportion to the local contributions to its spatial norm, such that the mean of
+        the map is approximately equal to the scalar value.
     return_intermediates
         If ``True``, returns intermediate computations in a dictionary, besides the
         distortion value.
@@ -132,6 +166,20 @@ def wasserstein_distortion(
     theoretical introduction to Wasserstein Distortion, refer to [2]_. Please cite these
     papers if you use this code for scientific or research work.
 
+    Let :math:`d_c(x)` be the local Wasserstein distance in channel :math:`c` at location
+    :math:`x` (i.e., the square root of the corresponding entry of the multi-scale
+    distortion maps), and :math:`w_c` the channel weight. With :math:`p` = `norm_spatial`
+    and :math:`q` = `norm_channels`, the distortion is
+
+    .. math:: \\operatorname{mean}_c \\, w_c \\left( \\operatorname{mean}_x \\, d_c(x)^p
+       \\right)^{q/p},
+
+    i.e., the :math:`q`-th power of a weighted, mean-normalized composite
+    :math:`L_q`/:math:`L_p` norm. Taking the power rather than the norm itself means the
+    defaults :math:`p = q = 2` yield the weighted mean of the squared distances. For
+    non-integer `log2_sigma`, :math:`d_c(x)^p` is linearly interpolated between adjacent
+    multi-scale levels.
+
     .. [1] J. Ballé, L. Versari, E. Dupont, H. Kim, M. Bauer: "Good, Cheap,
        and Fast: Overfitted Image Compression with Wasserstein Distortion," 2025 IEEE/CVF
        Conf. on Computer Vision and Pattern Recognition (CVPR), 2025.
@@ -140,6 +188,8 @@ def wasserstein_distortion(
        Fidelity and Realism," 2024 58th Ann. Conf. on Information Sciences and Systems
        (CISS), 2024. https://arxiv.org/abs/2310.03629
     """
+    _check_norm("norm_spatial", norm_spatial)
+    _check_norm("norm_channels", norm_channels)
     if features_a.shape != features_b.shape:
         raise ValueError(
             f"`features_a` and `features_b` must have same shape, but received "
@@ -151,7 +201,10 @@ def wasserstein_distortion(
             f"{features_a.shape[-2:]} and {log2_sigma.shape}, respectively."
         )
 
-    if not isinstance(log2_sigma, jax.core.Tracer) and jnp.max(log2_sigma) > num_levels:
+    # Tolerate rounding errors, e.g. from resizing in `multi_wasserstein_distortion`. The
+    # weight of the missing level beyond `num_levels` is at most the excess.
+    sigma_max = _concrete_max(log2_sigma)
+    if sigma_max is not None and sigma_max > num_levels + 1e-5:
         raise ValueError(f"Must have max(log2_sigma) <= {num_levels}.")
     if return_wd_map is not None and len(return_wd_map) != 2:
         raise ValueError(
@@ -183,33 +236,47 @@ def wasserstein_distortion(
         wd_maps.append(jnp.square(ma - mb) + jnp.square(sa - sb))
     assert len(wd_maps) == num_levels + 1
 
-    # Accumulate the distortion per channel, so the channel weights can be applied once.
-    num_channels = features_a.shape[-3]
-    if return_wd_map is None:
-        channel_dist = jnp.zeros(num_channels)
-    else:
-        channel_dist = jnp.zeros((num_channels, *return_wd_map))
+    # Weight the p-th powers of the distances for each level. The maps contain squared
+    # distances, so raising them to the power p/2 yields the p-th power of the distances.
+    level_dists = []
     intermediates = collections.defaultdict(list)
     intermediates.update(wd_maps=wd_maps)
     for i, wd_map in enumerate(wd_maps):
         assert wd_map.shape[-2:] == log2_sigma.shape
         level_weight = jax.nn.relu(1 - abs(log2_sigma - i))
         intermediates["weights"].append(level_weight)
-        if return_wd_map is None:
-            channel_dist += jnp.mean(level_weight * wd_map, axis=(-2, -1))
-        else:
-            channel_dist += jax.image.resize(
-                level_weight * wd_map, channel_dist.shape, "linear", antialias=True
-            )
+        level_dists.append(
+            level_weight * helpers.safe_pow(wd_map, norm_spatial / 2, sqrt_grad_limit)
+        )
         if 0 < i < len(wd_maps) - 1:
             # The statistics of the next level were subsampled in step `i - 1`.
             log2_sigma = helpers.lowpass(
                 log2_sigma, downsample=helpers.subsampling_offset(i - 1)
             )
+
+    # Convert the p-th power of the spatial norm per channel to its q-th power, and
+    # apply the channel weights.
+    exponent = norm_channels / norm_spatial
     if return_wd_map is None:
+        channel_dist = sum(jnp.mean(d, axis=(-2, -1)) for d in level_dists)
+        channel_dist = helpers.safe_pow(channel_dist, exponent, sqrt_grad_limit)  # pyright: ignore[reportArgumentType]
         dist = jnp.mean(weight * channel_dist)
     else:
-        dist = jnp.mean(jnp.reshape(weight, (-1, 1, 1)) * channel_dist, axis=0)
+        shape = (features_a.shape[-3], *return_wd_map)
+        channel_map = sum(
+            jax.image.resize(d, shape, "linear", antialias=True) for d in level_dists
+        )
+        if exponent != 1:
+            # Scale each channel's map so that its mean is the q-th power of the spatial
+            # norm. Since q/p - 1 > -1, flooring the norm at sqrt(tiny) keeps the scale
+            # below 1/sqrt(tiny), which is finite. Where the norm is below the floor, the
+            # map is (nearly) zero anyway.
+            channel_dist = jnp.mean(channel_map, axis=(-2, -1))
+            floor = jnp.sqrt(jnp.finfo(channel_dist.dtype).tiny)
+            weight = weight * helpers.safe_pow(
+                jnp.maximum(channel_dist, floor), exponent - 1, sqrt_grad_limit
+            )
+        dist = jnp.mean(weight[..., None, None] * channel_map, axis=0)
 
     if return_intermediates:
         return dist, intermediates
@@ -222,6 +289,8 @@ def multi_wasserstein_distortion(
     features_b: Collection[Array],
     log2_sigma: Array,
     *,
+    norm_spatial: float = 2.0,
+    norm_channels: float = 2.0,
     weights: Sequence[ArrayLike] | None = None,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
@@ -236,6 +305,8 @@ def multi_wasserstein_distortion(
     features_b: Collection[Array],
     log2_sigma: Array,
     *,
+    norm_spatial: float = 2.0,
+    norm_channels: float = 2.0,
     weights: Sequence[ArrayLike] | None = None,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
@@ -249,6 +320,8 @@ def multi_wasserstein_distortion(
     features_b: Collection[Array],
     log2_sigma: Array,
     *,
+    norm_spatial: float = 2.0,
+    norm_channels: float = 2.0,
     weights: Sequence[ArrayLike] | None = None,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
@@ -266,14 +339,24 @@ def multi_wasserstein_distortion(
     ----------
     features_a
         Multiple feature arrays of shape ``(channels, height, width)``, corresponding to
-        the first image to be compared.
+        the first image to be compared. No feature array may be larger than the image in
+        either spatial dimension.
     features_b
         Multiple feature arrays of shape ``(channels, height, width)``, corresponding to
-        the second image to be compared.
+        the second image to be compared. No feature array may be larger than the image in
+        either spatial dimension.
     log2_sigma
         Array of shape ``(height, width)``. The base two logarithm of the sigma map, which
-        indicates the amount of summarization in each location. Doesn't have to have the
-        same shape as the feature arrays.
+        indicates the amount of summarization in each location, in units of pixels of the
+        image. It must have the shape of the image the features were computed on. It is
+        resized to the shape of each feature array, and rescaled to its resolution.
+    norm_spatial
+        The exponent of the :math:`L_p` norm taken over spatial locations (see
+        `wasserstein_distortion`).
+    norm_channels
+        The exponent of the :math:`L_p` norm taken over channels (see
+        `wasserstein_distortion`). The resulting distortion values are summed across
+        feature arrays.
     weights
         One weight per feature array, used to form the weighted sum of the distortion
         values across feature arrays. Each weight can be a scalar, or a vector of shape
@@ -284,8 +367,9 @@ def multi_wasserstein_distortion(
         The number of multi-scale levels of the feature statistics to compute. Must be
         greater than or equal to the maximum of `log2_sigma`.
     sqrt_grad_limit
-        Upper limit for the gradient of the square root applied to the empirical feature
-        variance estimates, for numerical stability.
+        Upper limit for the gradient magnitude of the square root applied to the empirical
+        feature variance estimates, and of fractional powers taken by the norms, for
+        numerical stability.
     return_wd_map
         If ``None``, returns the scalar distortion value. If a spatial shape ``(height,
         width)``, returns a distortion map of that shape instead, which aggregates the
@@ -332,6 +416,12 @@ def multi_wasserstein_distortion(
             f"{len(weights)} and {len(features_a)}, respectively."
         )
 
+    # Since no feature array is larger than the sigma map, the rescaling below can only
+    # decrease sigma, and it suffices to check the sigma map itself.
+    sigma_max = _concrete_max(log2_sigma)
+    if sigma_max is not None and sigma_max > num_levels:
+        raise ValueError(f"Must have max(log2_sigma) <= {num_levels}.")
+
     dist = jnp.zeros(() if return_wd_map is None else return_wd_map)
     intermediates = collections.defaultdict(list)
     for fa, fb, w in zip(features_a, features_b, weights):
@@ -340,20 +430,27 @@ def multi_wasserstein_distortion(
                 f"Found feature arrays with incompatible shapes. "
                 f"A: {fa.shape}, B: {fb.shape}."
             )
+        if fa.shape[-2] > log2_sigma.shape[-2] or fa.shape[-1] > log2_sigma.shape[-1]:
+            raise ValueError(
+                f"Feature arrays must not be larger than `log2_sigma` in either spatial "
+                f"dimension, but received {fa.shape[-2:]} and {log2_sigma.shape}."
+            )
         # Resize the sigma map to match the feature arrays.
         ls = jax.image.resize(log2_sigma, fa.shape[-2:], "linear", antialias=True)
         # Rescale sigma to match the feature arrays. For example, if a feature array has a
         # very low spatial resolution, we make sigma correspondingly smaller, because each
         # element in the feature array covers a larger portion of the image. Since we are
         # in log space, we subtract the log of the size ratio and then cap at zero.
-        log_ratio_h = jnp.log2(log2_sigma.shape[-2] / fa.shape[-2])
-        log_ratio_w = jnp.log2(log2_sigma.shape[-1] / fa.shape[-1])
+        log_ratio_h = math.log2(log2_sigma.shape[-2] / fa.shape[-2])
+        log_ratio_w = math.log2(log2_sigma.shape[-1] / fa.shape[-1])
         mean_log_ratio = (log_ratio_h + log_ratio_w) / 2
         ls = jax.nn.relu(ls - mean_log_ratio)
         d, s = wasserstein_distortion(
             fa,
             fb,
             ls,
+            norm_spatial=norm_spatial,
+            norm_channels=norm_channels,
             weight=w,
             num_levels=num_levels,
             sqrt_grad_limit=sqrt_grad_limit,
@@ -375,6 +472,8 @@ def vgg16_wasserstein_distortion(
     log2_sigma: Array,
     *,
     num_scales: int = 3,
+    norm_spatial: float = 2.0,
+    norm_channels: float = 2.0,
     image_weight: ArrayLike = 20.0,
     num_levels: int = 5,
     sqrt_grad_limit: float = 1e6,
@@ -394,13 +493,19 @@ def vgg16_wasserstein_distortion(
         scaled to floats in the range [0, 1].
     log2_sigma
         Array of shape ``(height, width)``. The base two logarithm of the sigma map, which
-        indicates the amount of summarization in each location. Doesn't have to have the
-        same shape as the image arrays.
+        indicates the amount of summarization in each location, in units of pixels. It
+        must have the same shape as the image arrays.
     num_scales
         The number of scales of the image the features should be computed on. The image
         will be downsampled ``num_scales - 1`` times and VGG features computed on the
         original image plus the downsampled versions. The concatenated list of all
         features will be used to compute the distortion.
+    norm_spatial
+        The exponent of the :math:`L_p` norm taken over spatial locations (see
+        `wasserstein_distortion`).
+    norm_channels
+        The exponent of the :math:`L_p` norm taken over channels (see
+        `wasserstein_distortion`).
     image_weight
         Weight of the distortion computed on the image itself (i.e., on pixels), relative
         to the VGG feature maps, which each have weight 1. Can be a scalar, or a vector of
@@ -409,8 +514,9 @@ def vgg16_wasserstein_distortion(
         The number of multi-scale levels of the feature statistics to compute. Must be
         greater than or equal to the maximum of `log2_sigma`.
     sqrt_grad_limit
-        Upper limit for the gradient of the square root applied to the empirical feature
-        variance estimates, for numerical stability.
+        Upper limit for the gradient magnitude of the square root applied to the empirical
+        feature variance estimates, and of fractional powers taken by the norms, for
+        numerical stability.
     return_wd_map
         If ``None``, returns the scalar distortion value. If a spatial shape ``(height,
         width)``, returns a distortion map of that shape instead, which aggregates the
@@ -437,6 +543,11 @@ def vgg16_wasserstein_distortion(
        Fidelity and Realism," 2024 58th Ann. Conf. on Information Sciences and Systems
        (CISS), 2024. https://arxiv.org/abs/2310.03629
     """
+    if jnp.shape(image_a)[-2:] != jnp.shape(log2_sigma):
+        raise ValueError(
+            f"`log2_sigma` must have the same spatial shape as the images, but received "
+            f"{jnp.shape(log2_sigma)} and {jnp.shape(image_a)[-2:]}, respectively."
+        )
     features_a = pretrained_features.compute_vgg16_features(
         image_a, num_scales=num_scales
     )
@@ -448,6 +559,8 @@ def vgg16_wasserstein_distortion(
         features_a,
         features_b,
         log2_sigma,
+        norm_spatial=norm_spatial,
+        norm_channels=norm_channels,
         weights=[image_weight] + [1.0] * (len(features_a) - 1),
         num_levels=num_levels,
         sqrt_grad_limit=sqrt_grad_limit,

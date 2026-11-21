@@ -70,6 +70,38 @@ def safe_sqrt(inputs: Tensor, limit: float) -> Tensor:
     return _SafeSqrt.apply(inputs, limit)
 
 
+class _SafePow(torch.autograd.Function):
+    """``inputs ** exponent``, with gradient magnitude capped if ``exponent < 1``."""
+
+    @override
+    @staticmethod
+    def forward(ctx, inputs: Tensor, exponent: float, limit: float) -> Tensor:  # pylint: disable=arguments-differ
+        ctx.save_for_backward(inputs)
+        ctx.exponent = exponent
+        ctx.limit = limit
+        return torch.pow(inputs, exponent)
+
+    @override
+    @staticmethod
+    def backward(ctx, grad: Tensor):  # pylint: disable=arguments-differ
+        (inputs,) = ctx.saved_tensors
+        inputs_grad = ctx.exponent * torch.pow(inputs, ctx.exponent - 1)
+        if ctx.exponent < 1:
+            inputs_grad = torch.clamp(inputs_grad, -ctx.limit, ctx.limit)
+        return inputs_grad * grad, None, None
+
+
+def safe_pow(inputs: Tensor, exponent: float, limit: float) -> Tensor:
+    """``inputs ** exponent`` for nonnegative inputs, with gradient magnitude capped.
+
+    For ``exponent == 1``, returns `inputs` unchanged. For ``exponent < 1``, the
+    gradient, which is unbounded near zero, is clipped to ``[-limit, limit]``.
+    """
+    if exponent == 1:
+        return inputs
+    return _SafePow.apply(inputs, exponent, limit)
+
+
 @functools.cache
 def _lowpass_kernel(device: torch.device, dtype: torch.dtype) -> Tensor:
     """Returns the lowpass kernel, cached to avoid a host-to-device copy on every call."""

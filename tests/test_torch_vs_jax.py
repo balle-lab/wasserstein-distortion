@@ -64,6 +64,42 @@ def test_wasserstein_distortion_matches():
     )
 
 
+@pytest.mark.parametrize("norm_spatial, norm_channels", [(1.0, 1.0), (3.0, 1.5)])
+@pytest.mark.parametrize("return_wd_map", [None, (32, 32)])
+def test_wasserstein_distortion_composite_norm_matches(
+    norm_spatial, norm_channels, return_wd_map
+):
+    """Compares distortion values, maps and gradients for composite norms."""
+    fa = random_features(0, (4, 32, 32)).astype(np.float32)
+    fb = random_features(1, (4, 32, 32)).astype(np.float32)
+    ls = (4 * np.random.default_rng(2).uniform(size=(32, 32))).astype(np.float32)
+    kwargs = dict(
+        norm_spatial=norm_spatial,
+        norm_channels=norm_channels,
+        return_wd_map=return_wd_map,
+    )
+
+    def loss_fn(fb):
+        out = wd_jax.wasserstein_distortion(jnp.array(fa), fb, jnp.array(ls), **kwargs)
+        return jnp.mean(out), out
+
+    (_, out_jax), grad_jax = jax.value_and_grad(loss_fn, has_aux=True)(jnp.array(fb))
+
+    fb_torch = torch.from_numpy(fb[None]).requires_grad_(True)
+    out_torch = wd_torch.wasserstein_distortion(
+        torch.from_numpy(fa[None]), fb_torch, torch.from_numpy(ls[None, None]), **kwargs
+    )
+    out_torch.mean().backward()
+
+    np.testing.assert_allclose(
+        out_torch[0].detach().numpy(), np.asarray(out_jax), rtol=1e-4, atol=1e-6
+    )
+    assert fb_torch.grad is not None
+    np.testing.assert_allclose(
+        fb_torch.grad[0].numpy(), np.asarray(grad_jax), rtol=1e-3, atol=1e-7
+    )
+
+
 def test_multi_wasserstein_distortion_matches():
     """Compares distortion values for features at multiple resolutions."""
     shapes = [(3, 64, 48), (8, 32, 24), (16, 16, 12)]

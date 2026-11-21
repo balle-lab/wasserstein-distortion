@@ -75,6 +75,35 @@ def safe_sqrt_jvp(limit, primals, tangents):
     return safe_sqrt(x, limit), sqrt_dot
 
 
+def safe_pow(inputs: Array, exponent: float, limit: float) -> Array:
+    """``inputs ** exponent`` for nonnegative inputs, with gradient magnitude capped.
+
+    For ``exponent == 1``, returns `inputs` unchanged. For ``exponent < 1``, the
+    gradient, which is unbounded near zero, is clipped to ``[-limit, limit]``.
+    """
+    if exponent == 1:
+        return inputs
+    return _safe_pow(inputs, exponent, limit)
+
+
+@functools.partial(jax.custom_jvp, nondiff_argnums=(1, 2))
+def _safe_pow(inputs: Array, exponent: float, limit: float) -> Array:
+    """Implementation of `safe_pow`."""
+    del limit  # unused in forward pass
+    return jnp.power(inputs, exponent)
+
+
+@_safe_pow.defjvp
+def _safe_pow_jvp(exponent, limit, primals, tangents):
+    """Gradient for `_safe_pow`."""
+    (x,) = primals
+    (x_dot,) = tangents
+    grad = exponent * jnp.power(x, exponent - 1)
+    if exponent < 1:
+        grad = jnp.clip(grad, -limit, limit)
+    return _safe_pow(x, exponent, limit), grad * x_dot
+
+
 def subsampling_offset(step: int) -> tuple[int, int]:
     """Returns the subsampling offset in height and width for a pyramid step.
 

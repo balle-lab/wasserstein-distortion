@@ -223,6 +223,98 @@ def test_wasserstein_distortion_sigma_zero_is_mse():
     )
 
 
+NORMS = [(2.0, 2.0), (1.0, 1.0), (1.0, 2.0), (2.0, 1.0), (3.0, 1.5)]
+
+
+@pytest.mark.parametrize("norm_spatial, norm_channels", NORMS)
+def test_wasserstein_distortion_sigma_zero_composite_norm(norm_spatial, norm_channels):
+    """Verifies the composite norm against a direct computation with zero sigma."""
+    generator = torch.Generator().manual_seed(0)
+    features_a = torch.randn(2, 4, 16, 16, generator=generator, dtype=torch.float64)
+    features_b = torch.randn(2, 4, 16, 16, generator=generator, dtype=torch.float64)
+    weight = torch.tensor([1.0, 3.0, 0.5, 2.0], dtype=torch.float64)
+
+    result = wasserstein.wasserstein_distortion(
+        features_a,
+        features_b,
+        torch.zeros(2, 1, 16, 16, dtype=torch.float64),
+        weight=weight,
+        norm_spatial=norm_spatial,
+        norm_channels=norm_channels,
+    )
+    diff = torch.abs(features_a - features_b)
+    spatial = torch.mean(diff**norm_spatial, dim=(2, 3)) ** (1 / norm_spatial)
+    expected = torch.mean(weight * spatial**norm_channels, dim=1)
+    torch.testing.assert_close(result, expected)
+
+
+@pytest.mark.parametrize("norm_spatial, norm_channels", NORMS)
+def test_wasserstein_distortion_composite_norm_map_and_gradients(
+    norm_spatial, norm_channels
+):
+    """Verifies distortion maps and gradients for composite norms.
+
+    Checks
+    ------
+    - The spatial means of the distortion maps approximately equal the distortions.
+    - The maps are zero for identical features.
+    - Gradients are finite, also for identical and constant features.
+    """
+    generator = torch.Generator().manual_seed(0)
+    features_a = torch.randn(2, 4, 32, 32, generator=generator, dtype=torch.float64)
+    features_b = torch.randn(2, 4, 32, 32, generator=generator, dtype=torch.float64)
+    log2_sigma = 5 * torch.rand(2, 1, 32, 32, generator=generator, dtype=torch.float64)
+    kwargs = dict(
+        weight=torch.tensor([1.0, 3.0, 0.5, 2.0], dtype=torch.float64),
+        norm_spatial=norm_spatial,
+        norm_channels=norm_channels,
+    )
+
+    dist = wasserstein.wasserstein_distortion(
+        features_a, features_b, log2_sigma, **kwargs
+    )
+    wd_map = wasserstein.wasserstein_distortion(
+        features_a, features_b, log2_sigma, return_wd_map=(32, 32), **kwargs
+    )
+    torch.testing.assert_close(wd_map.mean(dim=(1, 2)), dist, rtol=1e-3, atol=0.0)
+    wd_map = wasserstein.wasserstein_distortion(
+        features_a, features_a, log2_sigma, return_wd_map=(32, 32), **kwargs
+    )
+    torch.testing.assert_close(wd_map, torch.zeros_like(wd_map))
+
+    for fa, fb in [(features_a, features_b), (features_a, features_a), (None, None)]:
+        if fa is None:
+            fa = torch.ones(1, 2, 16, 16, dtype=torch.float64)
+            fb, ls = fa, torch.full((1, 1, 16, 16), 3.0, dtype=torch.float64)
+            kw = dict(norm_spatial=norm_spatial, norm_channels=norm_channels)
+        else:
+            ls, kw = log2_sigma, kwargs
+        for return_wd_map in [None, (16, 16)]:
+            fb = fb.detach().clone().requires_grad_(True)
+            wasserstein.wasserstein_distortion(
+                fa, fb, ls, return_wd_map=return_wd_map, **kw
+            ).sum().backward()
+            assert fb.grad is not None
+            assert torch.all(torch.isfinite(fb.grad))
+
+
+@pytest.mark.parametrize("norm", [0.0, -1.0, float("inf"), float("nan")])
+def test_wasserstein_distortion_invalid_norm_raises(norm):
+    """Verifies that invalid norm exponents are rejected."""
+    features = torch.ones(1, 2, 16, 16)
+    log2_sigma = torch.zeros(1, 1, 16, 16)
+    with pytest.raises(ValueError):
+        wasserstein.wasserstein_distortion(
+            features, features, log2_sigma, norm_spatial=norm
+        )
+    with pytest.raises(ValueError):
+        wasserstein.wasserstein_distortion(
+            features, features, log2_sigma, norm_channels=norm
+        )
+    with pytest.raises(ValueError):
+        wasserstein.WassersteinDistortion(lambda x: [x], norm_spatial=norm)
+
+
 def test_wasserstein_distortion_is_symmetric():
     """Verifies that swapping the two feature tensors doesn't change the distortion."""
     generator = torch.Generator().manual_seed(0)
@@ -263,6 +355,16 @@ def test_wasserstein_distortion_gradients_are_finite():
     dist.sum().backward()
     assert features_b.grad is not None
     assert torch.all(torch.isfinite(features_b.grad))
+
+
+@pytest.mark.parametrize("shape", [(64, 64), (33, 32), (32, 33)])
+def test_multi_wasserstein_distortion_rejects_features_larger_than_sigma(shape):
+    """Verifies that feature tensors larger than the sigma map are rejected."""
+    features = [torch.ones(1, 1, *shape)]
+    with pytest.raises(ValueError, match="larger"):
+        wasserstein.multi_wasserstein_distortion(
+            features, features, torch.zeros(1, 1, 32, 32)
+        )
 
 
 def test_multi_wasserstein_distortion_behavior():
@@ -466,6 +568,15 @@ def test_wasserstein_distortion_module_with_custom_features():
         module(image_a, image_b[..., :16], log2_sigma)
 
 
+@pytest.mark.parametrize("shape", [(32, 64), (64, 32), (128, 128)])
+def test_wasserstein_distortion_module_rejects_sigma_shape_mismatch(shape):
+    """Verifies that the sigma map must have the same height and width as the images."""
+    module = wasserstein.WassersteinDistortion(lambda x: [x])
+    image = torch.zeros(1, 3, 64, 64)
+    with pytest.raises(ValueError, match="same height and width"):
+        module(image, image, torch.zeros(1, 1, *shape))
+
+
 def test_wasserstein_distortion_module_accepts_plain_function():
     """Verifies that the feature extractor can be a plain function."""
     image = torch.rand(1, 3, 16, 16)
@@ -633,7 +744,7 @@ def test_multi_wasserstein_distortion_wd_map():
     shapes = [(2, 3, 64, 48), (2, 8, 32, 24), (2, 16, 16, 12), (2, 16, 15, 11)]
     features_a = [torch.randn(*s, generator=generator) for s in shapes]
     features_b = [torch.randn(*s, generator=generator) for s in shapes]
-    log2_sigma = 5 * torch.rand(2, 1, 32, 24, generator=generator)
+    log2_sigma = 5 * torch.rand(2, 1, 64, 48, generator=generator)
     weights = [20.0, 1.0, torch.ones(16), 1.0]
 
     dist = wasserstein.multi_wasserstein_distortion(
